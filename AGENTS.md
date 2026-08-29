@@ -28,7 +28,7 @@ Before opening a PR, read and follow `.github/AI_POLICY.md`.
 - Ensure the PR description explains the real problem or use case and accurately reflects the diff.
 - Include validation and testing information in the PR body.
 - Be prepared to explain and revise the contribution in response to reviewer questions.
-- Write the PR description using `.github/PULL_REQUEST_TEMPLATE.md`. Keep its section headings (`## Why are these changes needed?`, `## Related issue number`, `## Checks`, `## AI assistance`), fill each one in, and only check a checklist box once it is actually true.
+- Write the PR description using `.github/pull_request_template.md`. Keep its section headings (`## Why are these changes needed?`, `## Related issue number`, `## Checks`, `## AI assistance`), fill each one in, and only check a checklist box once it is actually true.
 
 ## Architecture Decision Records (ADR)
 
@@ -112,18 +112,24 @@ The current architectural baseline is `docs/design.md`.
 
 ## Package Structure
 
-`src/faststream_celery/` is a FastStream broker package; it mirrors the anatomy of the built-in brokers (`faststream/redis/` is the reference). See `docs/design.md` §17.
+`src/faststream_celery/` is a FastStream broker package; it mirrors the anatomy of the built-in brokers (`faststream/redis/` and `faststream/kafka/` are the reference). See `docs/design.md` §17.
 
-| Module        | Purpose                                                               | Key Exports                    |
-|---------------|-----------------------------------------------------------------------|--------------------------------|
-| `broker/`     | Broker, registrator, router                                           | `CeleryBroker`, `CeleryRouter` |
-| `configs/`    | `BrokerConfig` / `SubscriberUsecaseConfig` subclasses                 | —                              |
-| `publisher/`  | Producer (`kombu.Producer` wrapper), publisher factory                | —                              |
-| `subscriber/` | kombu consumer thread + `asyncio.Queue` bridge, ETA scheduler, canvas | —                              |
-| `parser.py`   | kombu Message → `StreamMessage` (protocol v1/v2 detection)            | —                              |
-| `message.py`  | `StreamMessage` subclass mapping ack/nack/reject to kombu             | `CeleryMessage`                |
-| `response.py` | Publish command / response types                                      | `CeleryPublishCommand`         |
-| `testing.py`  | In-memory test broker                                                 | `TestCeleryBroker`             |
+```
+src/faststream_celery/
+├── __init__.py        # public exports with explicit __all__
+├── annotations.py     # broker-specific Annotated type aliases
+├── broker/            # broker.py (BrokerUsecase subclass), router.py, registrator.py, logging.py
+├── configs/           # @dataclass(kw_only=True) configs inheriting BrokerConfig
+├── message.py         # StreamMessage subclass (CeleryMessage: ack/nack/reject → kombu)
+├── parser.py          # message parser (kombu Message → StreamMessage, protocol v1/v2 detection)
+├── publisher/         # publisher endpoint + producer.py (kombu.Producer wrapper)
+├── subscriber/        # subscriber endpoint (kombu consumer thread + asyncio.Queue bridge,
+│                      #  ETA scheduler, canvas; split into usecases/ if it grows)
+├── response.py        # PublishCommand subclasses (CeleryPublishCommand)
+├── security.py        # auth/security helpers
+├── testing.py         # in-memory TestBroker (TestCeleryBroker)
+└── exceptions.py      # broker-specific exceptions
+```
 
 ### Public API (`faststream_celery`)
 

@@ -1,0 +1,113 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+early_access: false
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  poem: false
+  collapse_walkthrough: true
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+
+  path_filters:
+    - "!uv.lock"
+    - "!**/_version.py"
+    - "!**/__pycache__/**"
+
+  path_instructions:
+    - path: "src/faststream_celery/broker/**"
+      instructions: >-
+        Broker package: CeleryBroker (BrokerUsecase subclass), router and
+        registrator. It must mirror the anatomy of FastStream's built-in
+        brokers (faststream/redis/ is the reference) — flag Celery-specific
+        API extensions, they are out of scope (ADR-0002). Imports from
+        faststream._internal are confined to the adapter layer (docs/design.md
+        §12); flag them anywhere else.
+
+    - path: "src/faststream_celery/subscriber/**"
+      instructions: >-
+        Subscriber package: the kombu consumer runs in a dedicated thread. All
+        kombu objects are confined to that thread — the async side communicates
+        via asyncio.Queue and loop.call_soon_threadsafe. Flag any kombu object
+        touched from the event loop thread, and any blocking call made on the
+        event loop. ETA scheduling and canvas handling live here too.
+
+    - path: "src/faststream_celery/publisher/**"
+      instructions: >-
+        Publisher package: an async wrapper around kombu.Producer. Publishing
+        must be async from the caller's perspective; flag blocking kombu calls
+        that are not isolated from the event loop.
+
+    - path: "src/faststream_celery/parser.py"
+      instructions: >-
+        Message parser: kombu Message -> StreamMessage, with Celery protocol
+        v1/v2 detection. Parsing must never execute code from a message
+        payload; flag any deserialization beyond the declared content-types.
+
+    - path: "src/faststream_celery/message.py"
+      instructions: >-
+        CeleryMessage: StreamMessage subclass mapping ack/nack/reject onto
+        kombu. Flag ack-paths that can double-ack or silently drop a reject.
+
+    - path: "src/faststream_celery/testing.py"
+      instructions: >-
+        TestCeleryBroker is an in-memory TestBroker. It must not import kombu
+        or touch the network — flag any real-broker dependency leaking in.
+
+    - path: "tests/**"
+      instructions: >-
+        pytest with pytest-asyncio. Arrange / Act / Assert, separated by blank
+        lines. Fixtures live in conftest.py. Flag tests that assert library
+        behaviour (faststream, kombu, celery) rather than our own decisions.
+        Integration tests run against a live Celery client/worker via
+        testcontainers (RabbitMQ/Redis) — wire-compatibility changes must be
+        covered there, not only in unit tests.
+
+    - path: ".github/workflows/**"
+      instructions: >-
+        Third-party actions should be pinned to a full commit SHA with the
+        version in a trailing comment (pr_tests.yaml and
+        nightly-faststream-main.yaml predate this convention). Checkout uses
+        persist-credentials: false unless the job pushes. Permissions are
+        least-privilege and declared per job. Flag any workflow that checks out
+        pull-request code under pull_request_target.
+
+    - path: "src/faststream_celery/**"
+      instructions: >-
+        House style (AGENTS.md): no `from __future__ import annotations`, no
+        function-level imports, no nested functions on runtime paths, no side
+        effects in __init__. Public implementations are re-exported from
+        faststream_celery/__init__.py and listed in __all__. Line length 90,
+        double quotes, Google-style docstrings.
+
+  tools:
+    ruff:
+      enabled: true
+    # ruff already covers this repo with select = ["ALL"]; a second linter would
+    # only add duplicate comments.
+    pylint:
+      enabled: false
+    flake8:
+      enabled: false
+    gitleaks:
+      enabled: true
+    actionlint:
+      enabled: true
+    hadolint:
+      enabled: false
+    yamllint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    semgrep:
+      enabled: true
+
+chat:
+  auto_reply: true

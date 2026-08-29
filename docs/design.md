@@ -160,15 +160,19 @@ more publisher).
 
 ```
 src/faststream_celery/
-├── broker/        # CeleryBroker + Registrator + CeleryRouter
-├── configs/       # BrokerConfig / SubscriberUsecaseConfig subclasses
-├── publisher/     # producer (kombu.Producer wrapper), factory
-├── subscriber/    # kombu thread + drain_events → asyncio.Queue, ETA scheduler, canvas
-├── parser.py      # kombu Message → StreamMessage (v1/v2 detection)
-├── message.py     # CeleryMessage(StreamMessage): ack/nack/reject → kombu
-├── response.py    # CeleryPublishCommand, CeleryResponse
-├── security.py
-└── testing.py     # TestCeleryBroker
+├── __init__.py        # public exports with explicit __all__
+├── annotations.py     # broker-specific Annotated type aliases
+├── broker/            # broker.py (BrokerUsecase subclass), router.py, registrator.py, logging.py
+├── configs/           # @dataclass(kw_only=True) configs inheriting BrokerConfig
+├── message.py         # StreamMessage subclass (CeleryMessage: ack/nack/reject → kombu)
+├── parser.py          # message parser (kombu Message → StreamMessage, protocol v1/v2 detection)
+├── publisher/         # publisher endpoint + producer.py (kombu.Producer wrapper)
+├── subscriber/        # subscriber endpoint (kombu consumer thread + asyncio.Queue bridge,
+│                      #  ETA scheduler, canvas; split into usecases/ if it grows)
+├── response.py        # PublishCommand subclasses (CeleryPublishCommand)
+├── security.py        # auth/security helpers
+├── testing.py         # in-memory TestBroker (TestCeleryBroker)
+└── exceptions.py      # broker-specific exceptions
 ```
 
 Public exports: `from faststream_celery import CeleryBroker, CeleryRouter, TestCeleryBroker`.
