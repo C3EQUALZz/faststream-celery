@@ -182,3 +182,6 @@ src/faststream_celery/_version.py
 *.pid
 *.out
 *.err
+
+# Local issue tracker (agent skills)
+.scratch/
