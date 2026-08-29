@@ -1,11 +1,11 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
+  - name: Security vulnerability
+    url: https://github.com/C3EQUALZz/faststream-celery/security/advisories/new
+    about: Report privately — please do not open a public issue.
   - name: Design documentation
     url: https://github.com/C3EQUALZz/faststream-celery/blob/main/docs/design.md
     about: The agreed broker design — check it before proposing architectural changes.
   - name: FastStream upstream
     url: https://github.com/ag2ai/faststream
     about: Questions about FastStream itself (not the Celery broker) belong to the upstream repository.
-  - name: Security policy
-    url: https://github.com/C3EQUALZz/faststream-celery/blob/main/.github/SECURITY.md
-    about: Do not report vulnerabilities in public issues — use the private reporting flow.

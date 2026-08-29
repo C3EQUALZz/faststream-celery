@@ -1,37 +1,29 @@
-# Please see the documentation for all configuration options:
-# https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
-
 version: 2
 updates:
-  # GitHub Actions
-  - package-ecosystem: "github-actions"
+  - package-ecosystem: uv
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "03:00"
+      interval: weekly
     cooldown:
       default-days: 7
-    labels:
-      - "dependencies"
-      - "area:actions"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore"
+      include: scope
     groups:
-      github-actions:
-        patterns:
-          - "*"
-  # Python (uv / pyproject.toml)
-  - package-ecosystem: "uv"
+      python-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # A major bump of the framework we adapt to is a deliberate migration,
+      # not a dependency update.
+      - dependency-name: "faststream"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "03:00"
+      interval: weekly
     cooldown:
       default-days: 7
-    labels:
-      - "dependencies"
-      - "area:deps"
-    groups:
-      uv:
-        patterns:
-          - "*"
+    commit-message:
+      prefix: "ci"

@@ -1,26 +1,42 @@
-name: Feature Request
-description: File a feature request
+name: Feature request
+description: Propose a capability or a change in behaviour
 labels: ["enhancement", "needs-triage"]
-title: "[Feature Request]: "
-
 body:
   - type: textarea
-    id: problem_description
+    id: problem
     attributes:
-      label: Is your feature request related to a problem? Please describe.
-      description: A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
-      placeholder: What problem are you trying to solve?
+      label: Problem
+      description: What can you not do today, and what does that cost you?
+    validations:
+      required: true
 
   - type: textarea
-    id: solution_description
+    id: proposal
     attributes:
-      label: Describe the solution you'd like
-      description: A clear and concise description of what you want to happen. Note that this package deliberately stays within FastStream broker idioms (see docs/design.md and ADR-0002) — Celery-specific API extensions are out of scope.
-      placeholder: How do you envision the solution?
+      label: Proposal
+      description: >-
+        What should happen instead? Keep in mind that the public API stays
+        within FastStream broker idioms (ADR-0002) — Celery-specific API
+        extensions are out of scope.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this belong to?
+      description: See docs/design.md. Pick "Not sure" rather than guessing.
+      options:
+        - Broker / routing
+        - Publishing
+        - Consuming / scheduling
+        - Testing utilities
+        - Cross-cutting (config, tooling, docs)
+        - Not sure
+    validations:
+      required: true
 
   - type: textarea
-    id: additional_context
+    id: alternatives
     attributes:
-      label: Additional context
-      description: Add any other context or screenshots about the feature request here.
-      placeholder: Any additional information
+      label: Alternatives considered

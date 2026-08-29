@@ -1,0 +1,62 @@
+# Declarative label set, synced by .github/workflows/labels.yml.
+- name: bug
+  color: d73a4a
+  description: Something isn't working
+- name: enhancement
+  color: a2eeef
+  description: New feature or request
+- name: documentation
+  color: 0075ca
+  description: Documentation changes
+- name: dependencies
+  color: 0366d6
+  description: Dependency updates
+- name: security
+  color: b60205
+  description: Security-relevant change or report
+
+# Triage status (see docs/agents/triage-labels.md)
+- name: needs-triage
+  color: fbca04
+  description: Maintainer needs to evaluate this issue
+- name: needs-info
+  color: fbca04
+  description: Waiting on reporter for more information
+- name: ready-for-agent
+  color: 0e8a16
+  description: Fully specified, ready for an AFK agent
+- name: ready-for-human
+  color: 0e8a16
+  description: Requires human implementation
+- name: wontfix
+  color: ffffff
+  description: Will not be actioned
+
+# Areas (applied by actions/labeler from .github/labeler.yml)
+- name: "area: broker"
+  color: 1d76db
+  description: CeleryBroker, CeleryRouter, registrator, configs
+- name: "area: publisher"
+  color: 1d76db
+  description: Producer wrapper and publish commands
+- name: "area: subscriber"
+  color: 1d76db
+  description: Consumer thread, ETA scheduler, canvas, message parser
+- name: "area: testing"
+  color: 1d76db
+  description: TestCeleryBroker in-memory test broker
+- name: "area: tests"
+  color: 0e8a16
+  description: Unit and integration tests
+- name: "area: ci"
+  color: 0e8a16
+  description: CI / workflows
+- name: "area: tooling"
+  color: 0e8a16
+  description: just / ruff / mypy / nox / hooks / dependencies
+- name: "area: agents"
+  color: fbca04
+  description: AGENTS.md, skills, agent configuration
+- name: "area: docs"
+  color: 0075ca
+  description: Documentation

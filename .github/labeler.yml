@@ -1,29 +1,61 @@
-# Path-based labels applied by actions/labeler to pull requests.
-# Syntax: https://github.com/actions/labeler (v5)
+# Auto-label PRs by changed paths (actions/labeler v6).
 
-area:core:
+"area: broker":
   - changed-files:
       - any-glob-to-any-file:
-          - src/**
+          - "src/faststream_celery/broker/**"
+          - "src/faststream_celery/configs/**"
 
-area:tests:
+"area: publisher":
   - changed-files:
       - any-glob-to-any-file:
-          - tests/**
+          - "src/faststream_celery/publisher/**"
+          - "src/faststream_celery/response.py"
 
-area:docs:
+"area: subscriber":
   - changed-files:
       - any-glob-to-any-file:
-          - docs/**
-          - "*.md"
+          - "src/faststream_celery/subscriber/**"
+          - "src/faststream_celery/parser.py"
+          - "src/faststream_celery/message.py"
 
-area:actions:
+"area: testing":
+  - changed-files:
+      - any-glob-to-any-file: "src/faststream_celery/testing.py"
+
+"area: tests":
   - changed-files:
       - any-glob-to-any-file:
-          - .github/**
+          - "tests/**"
+          - ".coveragerc"
 
-area:deps:
+"area: ci":
+  - changed-files:
+      - any-glob-to-any-file: ".github/**"
+
+"area: tooling":
   - changed-files:
       - any-glob-to-any-file:
-          - pyproject.toml
-          - uv.lock
+          - "justfile"
+          - "ruff.toml"
+          - "mypy.ini"
+          - ".pre-commit-config.yaml"
+          - "pyproject.toml"
+          - "uv.lock"
+          - "noxfile.py"
+
+"area: agents":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "AGENTS.md"
+          - "CLAUDE.md"
+          - "GEMINI.md"
+          - "CONTEXT.md"
+          - ".agents/**"
+          - ".claude/**"
+
+"area: docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "**/*.md"

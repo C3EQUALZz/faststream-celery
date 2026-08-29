@@ -1,61 +1,60 @@
-name: Bug Report
-description: File a bug report
-title: "[Bug]: "
+name: Bug report
+description: Something behaves differently from what it should
 labels: ["bug", "needs-triage"]
-
 body:
   - type: textarea
-    id: description
+    id: what-happened
     attributes:
-      label: Describe the bug
-      description: A clear and concise description of what the bug is.
-      placeholder: What went wrong?
+      label: What happened
+      description: What did you observe, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Broker / router (CeleryBroker, CeleryRouter)
+        - Publisher (producing messages)
+        - Subscriber / consumer thread
+        - ETA scheduler / canvas
+        - Message parser (protocol v1/v2)
+        - TestCeleryBroker (in-memory testing)
+        - Configuration / startup
+        - Not sure
+    validations:
+      required: true
+
   - type: textarea
     id: reproduce
     attributes:
-      label: Steps to reproduce
-      description: |
-        Steps to reproduce the behavior:
-
-        1. Step 1
-        2. Step 2
-        3. ...
-        4. See error
-      placeholder: How can we replicate the issue?
-  - type: textarea
-    id: mre
-    attributes:
-      label: Minimal reproducible example
-      description: A minimal, self-contained code snippet that reproduces the problem. This is the fastest way to get the bug triaged — reports without it are asked to add one.
+      label: Reproduction
+      description: >-
+        A minimal, self-contained code snippet that reproduces the problem. If
+        the bug involves interop with a real Celery client/worker, say so and
+        include the Celery-side code too.
       render: python
-      placeholder: |
-        from faststream_celery import CeleryBroker
-
-        # smallest possible code that triggers the bug
     validations:
       required: true
+
   - type: textarea
-    id: expected_behavior
+    id: logs
     attributes:
-      label: Expected Behavior
-      description: A clear and concise description of what you expected to happen.
-      placeholder: What should have happened?
+      label: Logs / traceback
+      description: Redact credentials (broker URLs contain passwords) before pasting.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: faststream-celery version or commit SHA, plus the faststream version.
+    validations:
+      required: true
+
   - type: textarea
-    id: screenshots
+    id: environment
     attributes:
-      label: Screenshots and logs
-      description: If applicable, add screenshots and logs to help explain your problem.
-      placeholder: Add screenshots here
-  - type: textarea
-    id: additional_information
-    attributes:
-      label: Additional Information
-      description: |
-        - Package Version: <!-- e.g., faststream-celery v0.1.0 -->
-        - FastStream Version: <!-- e.g., faststream v0.7.5 -->
-        - Celery / kombu Version: <!-- e.g., celery v5.4.0, kombu v5.5.0 -->
-        - Operating System: <!-- e.g., Windows 10, Ubuntu 22.04 -->
-        - Python Version: <!-- e.g., 3.10 -->
-        - Related Issues: <!-- Link to any related issues here (e.g., #1) -->
-        - Any other relevant information.
-      placeholder: Any additional details
+      label: Environment
+      description: Python version, OS, kombu/celery versions, and the broker (RabbitMQ, Redis, ...).

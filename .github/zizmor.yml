@@ -1,12 +1,11 @@
-# zizmor configuration: https://docs.zizmor.sh/configuration/
+# Configuration for zizmor (GitHub Actions static security analysis).
 rules:
   dangerous-triggers:
     ignore:
-      # pull_request_target is intentional here: actions/labeler v5 only
-      # applies labels via the GitHub API and never checks out PR code.
-      - labeler.yaml
+      # Requires a writable token; the workflow checks out nothing.
+      - labeler.yml
   unpinned-uses:
     config:
       policies:
-        # Actions are pinned by (major) version tags, not commit hashes.
+        # pr_tests.yaml / nightly-faststream-main.yaml pin by version tag.
         "*": ref-pin

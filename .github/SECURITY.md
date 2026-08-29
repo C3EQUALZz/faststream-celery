@@ -1,71 +1,40 @@
 # Security Policy
 
-Security and stability are paramount for `faststream-celery`.
+## Supported versions
 
-Learn more below. 👇
+`faststream-celery` is pre-1.0. Only the latest release and the `main` branch
+receive security fixes.
 
-## Versions
+## Reporting a vulnerability
 
-Only the latest release of `faststream-celery` is actively supported:
+Please **do not open a public issue** for a security problem.
 
-| Version | Supported |
-| ------- | --------- |
-| latest release | ✅ |
-| older releases | ❌ |
+Report it privately through GitHub's
+[private vulnerability reporting](https://github.com/C3EQUALZz/faststream-celery/security/advisories/new),
+or by email to <dan.kovalev2013@gmail.com>.
 
-We strongly encourage you to write tests for your application and regularly
-update your `faststream-celery` version after confirming that your tests pass.
-This ensures you benefit from the latest features, bug fixes, and **security
-updates**.
+Include, as far as you can:
 
-## Reporting a Vulnerability
+- what an attacker can do, and what access they need to do it
+- the affected component (broker, publisher, subscriber, parser, testing utils)
+- a reproduction — a message payload, a script, or a failing test
 
-If you suspect a security issue, even if you are uncertain, please report it
-promptly. However, **do not create a public issue**.
+You can expect an acknowledgement within 7 days and an assessment within 30.
 
-To responsibly report a security concern, navigate to the Security tab of the
-repository and click on *"Report a vulnerability"*.
+## Scope
 
-Alternatively, you can send an email to:
-[dan.kovalev2013@gmail.com](mailto:dan.kovalev2013@gmail.com).
+Especially relevant for this library:
 
-Ensure your report contains sufficient detail. As with standard issue reports,
-a minimal, reproducible example expedites issue resolution.
+- **Message parsing.** `parser.py` decodes kombu/Celery protocol v1/v2
+  payloads. Anything that turns a crafted message into code execution (unsafe
+  deserialization), an unbounded allocation, or a consumer crash is in scope.
+- **Credential exposure.** Broker URLs carry credentials; a code path that
+  logs or leaks one — including through exceptions and tracebacks — is in
+  scope.
+- **The kombu thread boundary.** The sync kombu consumer runs in its own
+  thread; a flaw that lets a remote message corrupt asyncio state or bypass
+  ack/nack/reject semantics is in scope.
 
-## Response and Disclosure Timeline
-
-We aim to respond to security reports on the following timeline:
-
-- **Acknowledgement:** within **3 business days** of receiving your report.
-- **Fix or mitigation:** within **90 days** for confirmed vulnerabilities,
-  coordinated with the reporter where appropriate.
-
-If we cannot meet these targets for a specific issue, we will communicate the
-reason and a revised timeline to the reporter.
-
-## Safe Harbor for Security Researchers
-
-We support good-faith security research and will not pursue or support legal
-action against researchers who:
-
-- Make a good-faith effort to avoid privacy violations, data destruction, and
-  service disruption.
-- Only interact with accounts and data they own or have explicit permission to
-  access.
-- Report vulnerabilities promptly via the channels described above and do not
-  disclose them publicly until we have had a reasonable opportunity to
-  remediate.
-
-Activity conducted consistent with this policy is considered authorized, and
-we will work with you to understand and resolve issues quickly.
-
-## Public Discussions
-
-Please restrain from publicly discussing potential security vulnerabilities. 🙊
-
-It is advisable to engage in private discussions and seek solutions first to
-minimize potential impact.
-
----
-
-Thanks for your help!
+Out of scope: findings that require an already-compromised broker or host,
+denial of service by volume alone, and reports produced by a scanner without a
+demonstrated impact.
