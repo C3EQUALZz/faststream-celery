@@ -1,0 +1,29 @@
+# Path-based labels applied by actions/labeler to pull requests.
+# Syntax: https://github.com/actions/labeler (v5)
+
+area:core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/**
+
+area:tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - tests/**
+
+area:docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/**
+          - "*.md"
+
+area:actions:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+
+area:deps:
+  - changed-files:
+      - any-glob-to-any-file:
+          - pyproject.toml
+          - uv.lock

@@ -1,0 +1,29 @@
+name: Zizmor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/**"
+  pull_request:
+    paths:
+      - ".github/**"
+
+permissions: {}
+
+jobs:
+  zizmor:
+    name: Zizmor (GitHub Actions static analysis)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # SARIF upload
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: zizmorcore/zizmor-action@v0.6.2
+        with:
+          inputs: .github/workflows

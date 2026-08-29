@@ -22,10 +22,13 @@ Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. The agreed broker d
 
 ## AI-assisted contribution policy
 
-- Do not propose unverified AI-generated code or text. Run the test suite and linters before considering a change done.
-- The change description must explain the real problem or use case and accurately reflect the diff.
-- Include validation and testing information with every change.
+Before opening a PR, read and follow `.github/AI_POLICY.md`.
+
+- Do not open PRs with unverified AI-generated code or text.
+- Ensure the PR description explains the real problem or use case and accurately reflects the diff.
+- Include validation and testing information in the PR body.
 - Be prepared to explain and revise the contribution in response to reviewer questions.
+- Write the PR description using `.github/PULL_REQUEST_TEMPLATE.md`. Keep its section headings (`## Why are these changes needed?`, `## Related issue number`, `## Checks`, `## AI assistance`), fill each one in, and only check a checklist box once it is actually true.
 
 ## Architecture Decision Records (ADR)
 
