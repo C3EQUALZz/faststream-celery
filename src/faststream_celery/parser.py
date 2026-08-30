@@ -48,7 +48,7 @@ class CeleryParser:
         properties: MutableHeaders = raw.properties or {}
 
         return CeleryMessage(
-            raw_message=raw,
+            raw_message=message,
             ack_executor=message.executor,
             body=body,
             headers=headers,

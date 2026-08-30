@@ -214,7 +214,8 @@ class TestPrefetch:
         msg = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
 
         assert msg.message.headers["id"] == "1"
-        assert not bridge._prefetch_changed.is_set()
+        # The consumer thread applies the change on its next pass.
+        await _until(lambda: not bridge._prefetch_changed.is_set())
 
         await bridge.stop()
 
@@ -247,3 +248,17 @@ class TestPayloads:
         assert msg.message.content_type == "application/x-unknown"
 
         await bridge.stop()
+
+
+async def _until(predicate: Callable[[], bool], timeout: float = GET_TIMEOUT) -> None:
+    """Wait for a state the bridge reaches on its consumer thread."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    while loop.time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+
+    msg = f"condition not reached within {timeout}s"
+    raise AssertionError(msg)

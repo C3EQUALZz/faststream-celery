@@ -1,68 +1,109 @@
-from collections.abc import Callable
-from unittest.mock import MagicMock
-
 import pytest
 from faststream.message import AckStatus
 
-from faststream_celery.message import CeleryMessage
+from faststream_celery.message import CeleryMessage, ConsumerMessage, run_inline
+from tests.helpers import RecordingMessage, raw_message
 
 
-def _make_celery_message() -> tuple[CeleryMessage, MagicMock]:
-    raw = MagicMock()
-
-    async def executor(action: Callable[[], None]) -> None:
-        action()
-
-    return CeleryMessage(raw_message=raw, body=b"", ack_executor=executor), raw
+@pytest.fixture()
+def raw() -> RecordingMessage:
+    return raw_message([[1, 2], {}, {}], headers={"task": "proj.tasks.add"})
 
 
-@pytest.mark.asyncio()
-async def test_ack_calls_kombu_ack() -> None:
-    message, raw = _make_celery_message()
-
-    await message.ack()
-
-    raw.ack.assert_called_once_with()
-    assert message.committed is AckStatus.ACKED
-
-
-@pytest.mark.asyncio()
-async def test_ack_is_idempotent() -> None:
-    message, raw = _make_celery_message()
-
-    await message.ack()
-    await message.ack()
-
-    raw.ack.assert_called_once_with()
+@pytest.fixture()
+def message(raw: RecordingMessage) -> CeleryMessage:
+    return CeleryMessage(
+        raw_message=ConsumerMessage(raw, run_inline),
+        body=b"",
+        ack_executor=run_inline,
+    )
 
 
-@pytest.mark.asyncio()
-async def test_nack_requeues() -> None:
-    """Nack maps to kombu reject with requeue (Celery task retry semantics)."""
-    message, raw = _make_celery_message()
+class TestAcknowledgement:
+    @pytest.mark.asyncio()
+    async def test_ack_acknowledges_the_kombu_message(
+        self,
+        message: CeleryMessage,
+        raw: RecordingMessage,
+    ) -> None:
+        await message.ack()
 
-    await message.nack()
+        assert raw.acks == [False]
+        assert message.committed is AckStatus.ACKED
 
-    raw.reject.assert_called_once_with(requeue=True)
-    assert message.committed is AckStatus.NACKED
+    @pytest.mark.asyncio()
+    async def test_nack_requeues(
+        self,
+        message: CeleryMessage,
+        raw: RecordingMessage,
+    ) -> None:
+        """Nack maps to a kombu reject with requeue (Celery retry semantics)."""
+        await message.nack()
+
+        assert raw.rejects == [True]
+        assert message.committed is AckStatus.NACKED
+
+    @pytest.mark.asyncio()
+    async def test_reject_does_not_requeue(
+        self,
+        message: CeleryMessage,
+        raw: RecordingMessage,
+    ) -> None:
+        await message.reject()
+
+        assert raw.rejects == [False]
+        assert message.committed is AckStatus.REJECTED
+
+    @pytest.mark.asyncio()
+    async def test_ack_is_idempotent(
+        self,
+        message: CeleryMessage,
+        raw: RecordingMessage,
+    ) -> None:
+        await message.ack()
+        await message.ack()
+
+        assert raw.acks == [False]
+
+    @pytest.mark.asyncio()
+    async def test_only_the_first_settlement_counts(
+        self,
+        message: CeleryMessage,
+        raw: RecordingMessage,
+    ) -> None:
+        await message.ack()
+        await message.nack()
+        await message.reject()
+
+        assert raw.acks == [False]
+        assert raw.rejects == []
+        assert message.committed is AckStatus.ACKED
+
+    @pytest.mark.asyncio()
+    async def test_a_rejected_message_is_not_acked_later(
+        self,
+        message: CeleryMessage,
+        raw: RecordingMessage,
+    ) -> None:
+        await message.reject()
+        await message.ack()
+
+        assert raw.rejects == [False]
+        assert raw.acks == []
 
 
-@pytest.mark.asyncio()
-async def test_reject_does_not_requeue() -> None:
-    message, raw = _make_celery_message()
+class TestKombuMessage:
+    def test_it_exposes_the_message_behind_the_wrapper(
+        self,
+        message: CeleryMessage,
+        raw: RecordingMessage,
+    ) -> None:
+        assert message.kombu_message is raw
 
-    await message.reject()
-
-    raw.reject.assert_called_once_with(requeue=False)
-    assert message.committed is AckStatus.REJECTED
-
-
-@pytest.mark.asyncio()
-async def test_nack_after_ack_is_ignored() -> None:
-    message, raw = _make_celery_message()
-
-    await message.ack()
-    await message.nack()
-
-    raw.ack.assert_called_once_with()
-    raw.reject.assert_not_called()
+    def test_the_raw_message_carries_the_ack_executor(
+        self,
+        message: CeleryMessage,
+    ) -> None:
+        """`raw_message` is the broker's own message type, as FastStream expects."""
+        assert isinstance(message.raw_message, ConsumerMessage)
+        assert message.raw_message.executor is run_inline

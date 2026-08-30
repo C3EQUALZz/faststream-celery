@@ -70,7 +70,7 @@ class CeleryBroker(
         max_workers: int = 1,
         prefetch_count: int | None = None,
         # stock FastStream parameters
-        middlewares: "Sequence[BrokerMiddleware[ConsumerMessage]]" = (),
+        middlewares: "Sequence[BrokerMiddleware[Any, Any]]" = (),
         logger: Any = EMPTY,
         log_level: int = logging.INFO,
         parser: Optional["CustomCallable"] = None,

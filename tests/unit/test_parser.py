@@ -2,8 +2,9 @@ import json
 
 import pytest
 
+from faststream_celery.message import ConsumerMessage
 from faststream_celery.parser import CeleryParser
-from tests.helpers import consumer_message, task_message, v1_task_message
+from tests.helpers import consumer_message, recorded, task_message, v1_task_message
 
 
 @pytest.fixture()
@@ -137,6 +138,42 @@ class TestProtocolV1:
         )
 
         assert json.loads(msg.body) == {"args": [], "kwargs": {}}
+
+
+class TestRawMessage:
+    """`raw_message` must hold what the broker declares as its message type."""
+
+    @pytest.mark.asyncio()
+    async def test_it_holds_the_consumer_message(self, parser: CeleryParser) -> None:
+        incoming = task_message()
+
+        msg = await parser.parse_message(incoming)
+
+        assert isinstance(msg.raw_message, ConsumerMessage)
+        assert msg.raw_message is incoming
+
+    @pytest.mark.asyncio()
+    async def test_the_kombu_message_stays_reachable(
+        self,
+        parser: CeleryParser,
+    ) -> None:
+        incoming = task_message()
+
+        msg = await parser.parse_message(incoming)
+
+        assert msg.kombu_message is incoming.message
+
+    @pytest.mark.asyncio()
+    async def test_acknowledgement_reaches_the_kombu_message(
+        self,
+        parser: CeleryParser,
+    ) -> None:
+        incoming = task_message()
+
+        msg = await parser.parse_message(incoming)
+        await msg.ack()
+
+        assert recorded(incoming).acks == [False]
 
 
 class TestPlainMessages:

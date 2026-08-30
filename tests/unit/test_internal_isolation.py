@@ -13,6 +13,10 @@ import pytest
 PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "src" / "faststream_celery"
 ADAPTER = PACKAGE_ROOT / "_internal.py"
 
+# One adapter per optional surface: the FastAPI one cannot live in the
+# package-level module without making FastAPI a hard dependency.
+ADAPTER_NAME = "_internal.py"
+
 PRIVATE_MODULE = "faststream._internal"
 
 
@@ -47,13 +51,16 @@ def test_the_package_has_source_files_to_check() -> None:
     assert ADAPTER.exists()
 
 
-def test_the_adapter_module_does_import_the_private_api() -> None:
-    assert _private_imports(ADAPTER)
+def test_every_adapter_module_imports_the_private_api() -> None:
+    adapters = [p for p in _source_files() if p.name == ADAPTER_NAME]
+
+    assert adapters
+    assert all(_private_imports(p) for p in adapters)
 
 
 @pytest.mark.parametrize(
     "path",
-    [p for p in _source_files() if p != ADAPTER],
+    [p for p in _source_files() if p.name != ADAPTER_NAME],
     ids=lambda p: str(p.relative_to(PACKAGE_ROOT)),
 )
 def test_no_other_module_imports_the_private_api(path: Path) -> None:

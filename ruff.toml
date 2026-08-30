@@ -54,9 +54,15 @@ ignore = [
 [lint.per-file-ignores]
 # The adapter module exists precisely to import the private `faststream._internal`
 # API in one place (docs/design.md §12), so PLC2701 is expected there.
-"src/faststream_celery/_internal.py" = [
+"src/faststream_celery/**/_internal.py" = [
     "PLC2701",
     "SLF001",
+]
+# Messaging semantic conventions are still incubating upstream; the stable
+# `opentelemetry.semconv.attributes` package has no messaging module yet,
+# and `SpanAttributes` is deprecated.
+"src/faststream_celery/opentelemetry/provider.py" = [
+    "PLC2701",
 ]
 "tests/**/*.py" = [
     "S",

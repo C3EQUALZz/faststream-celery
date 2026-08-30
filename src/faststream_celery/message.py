@@ -32,7 +32,7 @@ async def run_inline(action: Callable[[], None]) -> None:  # ruff: ignore[unused
     action()
 
 
-class CeleryMessage(StreamMessage[Message]):
+class CeleryMessage(StreamMessage[ConsumerMessage]):
     """A message received from a Celery-compatible queue.
 
     ``ack()`` / ``nack()`` / ``reject()`` map onto kombu acknowledgements,
@@ -41,7 +41,7 @@ class CeleryMessage(StreamMessage[Message]):
 
     def __init__(  # ruff: ignore[too-many-arguments]
         self,
-        raw_message: Message,
+        raw_message: ConsumerMessage,
         body: bytes | Any,
         *,
         ack_executor: AckExecutor,
@@ -62,23 +62,28 @@ class CeleryMessage(StreamMessage[Message]):
         )
         self._ack_executor = ack_executor
 
+    @property
+    def kombu_message(self) -> Message:
+        """The kombu message this one was parsed from."""
+        return self.raw_message.message
+
     @override
     async def ack(self) -> None:
         """Acknowledge the message (kombu ``basic_ack``)."""
         if self.committed is None:
             await super().ack()
-            await self._ack_executor(self.raw_message.ack)
+            await self._ack_executor(self.kombu_message.ack)
 
     @override
     async def nack(self) -> None:
         """Reject the message with requeue (Celery task retry semantics)."""
         if self.committed is None:
             await super().nack()
-            await self._ack_executor(partial(self.raw_message.reject, requeue=True))
+            await self._ack_executor(partial(self.kombu_message.reject, requeue=True))
 
     @override
     async def reject(self) -> None:
         """Reject the message without requeue."""
         if self.committed is None:
             await super().reject()
-            await self._ack_executor(partial(self.raw_message.reject, requeue=False))
+            await self._ack_executor(partial(self.kombu_message.reject, requeue=False))
