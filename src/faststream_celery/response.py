@@ -2,7 +2,7 @@ from faststream.exceptions import SetupError
 from faststream.response import PublishCommand, PublishType
 from typing_extensions import override
 
-from faststream_celery.task import CelerySendableMessage
+from faststream_celery.schemas.task import CelerySendableMessage
 from faststream_celery.types import MutableHeaders
 
 

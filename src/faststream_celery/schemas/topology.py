@@ -9,8 +9,7 @@ from typing import NamedTuple
 
 from faststream.specification.schema.bindings import amqp
 
-# The AMQP default exchange, used for RPC replies.
-DEFAULT_EXCHANGE = ""
+from .constants import DEFAULT_EXCHANGE
 
 
 class Topology(NamedTuple):

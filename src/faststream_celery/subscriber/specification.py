@@ -9,7 +9,7 @@ from typing_extensions import override
 
 from faststream_celery._internal import SubscriberSpecification
 from faststream_celery.configs import CeleryBrokerConfig
-from faststream_celery.specification import build_topology
+from faststream_celery.schemas.topology import build_topology
 
 from .config import CelerySubscriberSpecificationConfig
 

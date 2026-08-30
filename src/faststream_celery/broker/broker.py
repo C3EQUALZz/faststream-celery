@@ -27,7 +27,7 @@ from faststream_celery.message import ConsumerMessage
 from faststream_celery.middlewares import CeleryResultMiddleware
 from faststream_celery.publisher.producer import CeleryFastProducer
 from faststream_celery.response import CeleryPublishCommand
-from faststream_celery.task import CelerySendableMessage
+from faststream_celery.schemas.task import CelerySendableMessage
 from faststream_celery.types import MutableHeaders
 
 from .logging import make_celery_logger_state

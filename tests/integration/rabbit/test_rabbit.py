@@ -2,7 +2,7 @@
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from celery import Celery
@@ -10,8 +10,11 @@ from faststream import FastStream, TestApp
 
 from faststream_celery import CeleryBroker, CeleryTask
 from tests.helpers import running
-
-from ..base import CONSUME_TIMEOUT, WORKER_TIMEOUT, TransportTestcase
+from tests.integration.base import (
+    CONSUME_TIMEOUT,
+    WORKER_TIMEOUT,
+    TransportTestcase,
+)
 
 pytestmark = [pytest.mark.connected(), pytest.mark.rabbit(), pytest.mark.slow()]
 
@@ -79,7 +82,7 @@ class TestAmqpRpc:
         self,
         broker: CeleryBroker,
         queue: str,
-        celery_worker: Path,
+        celery_worker: Path,  # ruff: ignore[unused-method-argument]
     ) -> None:
         """`broker.request(...)` returns a real worker's result."""
         async with running(broker):
@@ -99,7 +102,7 @@ class TestAmqpRpc:
         self,
         broker: CeleryBroker,
         queue: str,
-        celery_worker: Path,
+        celery_worker: Path,  # ruff: ignore[unused-method-argument]
     ) -> None:
         """A task that raises on the worker comes back as a FAILURE envelope."""
         async with running(broker):
@@ -134,7 +137,7 @@ class TestAmqpRpc:
         self,
         broker: CeleryBroker,
         queue: str,
-        celery_worker: Path,
+        celery_worker: Path,  # ruff: ignore[unused-method-argument]
     ) -> None:
         """Concurrent requests do not read each other's replies."""
         async with running(broker):
@@ -148,7 +151,9 @@ class TestAmqpRpc:
                     for value in range(3)
                 ),
             )
-            envelopes = [await response.decode() for response in responses]
+            envelopes = [
+                cast("dict[str, Any]", await response.decode()) for response in responses
+            ]
 
         assert sorted(envelope["result"] for envelope in envelopes) == [0, 1, 2]
 

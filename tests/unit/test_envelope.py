@@ -5,12 +5,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from faststream.response import PublishType
 
-from faststream_celery.publisher.producer import (
-    PERSISTENT_DELIVERY_MODE,
-    CeleryFastProducer,
-)
+from faststream_celery.publisher.producer import CeleryFastProducer
 from faststream_celery.response import CeleryPublishCommand
-from faststream_celery.task import CeleryTask, build_task_envelope
+from faststream_celery.schemas.constants import PERSISTENT_DELIVERY_MODE
+from faststream_celery.schemas.task import CeleryTask, build_task_envelope
 
 if TYPE_CHECKING:
     from kombu import Connection

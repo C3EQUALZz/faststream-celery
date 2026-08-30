@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from celery import Celery
+from docker.errors import DockerException
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.waiting_utils import wait_for_logs
 
@@ -25,7 +26,7 @@ def _start(container: DockerContainer, ready_log: str) -> Iterator[DockerContain
     """Start a container, skipping the session when Docker is unavailable."""
     try:
         container.start()
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (DockerException, OSError) as exc:
         pytest.skip(f"Docker is not available, skipping integration tests: {exc}")
 
     try:

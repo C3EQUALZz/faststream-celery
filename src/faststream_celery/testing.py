@@ -30,8 +30,13 @@ from faststream_celery.message import ConsumerMessage, run_inline
 from faststream_celery.parser import CeleryParser, read_headers
 from faststream_celery.publisher.producer import CeleryFastProducer
 from faststream_celery.response import CeleryPublishCommand
+from faststream_celery.schemas.constants import CONTENT_ENCODING, CONTENT_TYPE
+from faststream_celery.schemas.task import (
+    CelerySendableMessage,
+    CeleryTask,
+    build_task_envelope,
+)
 from faststream_celery.subscriber import CelerySubscriber
-from faststream_celery.task import CelerySendableMessage, CeleryTask, build_task_envelope
 from faststream_celery.types import MutableHeaders
 
 if TYPE_CHECKING:
@@ -42,8 +47,6 @@ if TYPE_CHECKING:
 
 __all__ = ("TestCeleryBroker",)
 
-JSON_CONTENT_TYPE = "application/json"
-
 
 class PatchedMessage(Message):
     """A kombu message with no channel behind it.
@@ -52,12 +55,15 @@ class PatchedMessage(Message):
     broker, so there is nothing to settle.
     """
 
-    def ack(self, multiple: bool = False) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    @override
+    def ack(self, multiple: bool = False) -> None:
         """Acknowledge the message (a no-op without a real channel)."""
 
-    def reject(self, requeue: bool = False) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    @override
+    def reject(self, requeue: bool = False) -> None:
         """Reject the message (a no-op without a real channel)."""
 
+    @override
     def requeue(self) -> None:
         """Requeue the message (a no-op without a real channel)."""
 
@@ -82,7 +88,7 @@ async def build_message(  # ruff: ignore[too-many-arguments]
     if isinstance(message, CeleryTask):
         envelope = build_task_envelope(message, task_id=correlation_id)
         body = dump_json(envelope.body)
-        content_type = JSON_CONTENT_TYPE
+        content_type = CONTENT_TYPE
         message_headers = dict(envelope.headers)
         message_headers.update(headers or {})
 
@@ -91,9 +97,11 @@ async def build_message(  # ruff: ignore[too-many-arguments]
         message_headers = dict(headers or {})
 
     raw = PatchedMessage(
-        body=body,
+        # Bytes, the way every real transport delivers a body; the kombu
+        # stubs describe the narrower `str` a producer may pass instead.
+        body=body,  # type: ignore[arg-type]
         content_type=content_type,
-        content_encoding="utf-8",
+        content_encoding=CONTENT_ENCODING,
         headers=message_headers,
         properties={
             "correlation_id": correlation_id,

@@ -8,7 +8,7 @@ from typing_extensions import override
 
 from faststream_celery.message import ConsumerMessage
 from faststream_celery.response import CeleryPublishCommand
-from faststream_celery.result import build_failure
+from faststream_celery.schemas.result import build_failure
 
 if TYPE_CHECKING:
     from faststream.message import StreamMessage
@@ -45,6 +45,8 @@ class CeleryResultMiddleware(BaseMiddleware[CeleryPublishCommand, ConsumerMessag
         try:
             return await call_next(msg)
 
+        # A handler may raise anything; the exception is reported to the
+        # Celery caller and then re-raised untouched.
         except Exception as exc:
             await self._publish_failure(msg, exc)
             raise

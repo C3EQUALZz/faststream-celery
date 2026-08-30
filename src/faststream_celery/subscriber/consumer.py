@@ -14,6 +14,9 @@ from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Protocol
 
+from faststream.exceptions import IncorrectState
+
+from faststream_celery.exceptions import DECODE_ERRORS, SETTLE_ERRORS
 from faststream_celery.message import ConsumerMessage
 from faststream_celery.parser import read_headers
 
@@ -88,7 +91,9 @@ class SharedConsumer:
             try:
                 await self._route(msg)
             except Exception as exc:
-                # Letting this task die would silently stop the whole queue.
+                # The one deliberate catch-all in the package: this task is
+                # the queue's pump, and letting it die would stop the queue
+                # with nothing said about it.
                 self._logger.log(
                     f"Failed to route a message: {exc!r}",
                     logging.ERROR,
@@ -120,7 +125,7 @@ class SharedConsumer:
         holds a slot in the prefetch window. A Celery worker drops an
         unknown task the same way.
         """
-        with suppress(Exception):
+        with suppress(*SETTLE_ERRORS, IncorrectState):
             await msg.executor(partial(msg.message.reject, requeue=False))
 
 
@@ -174,7 +179,7 @@ class ConsumerRegistry:
 def _task_name(msg: ConsumerMessage) -> str | None:
     try:
         name = read_headers(msg.message).get("task")
-    except Exception:  # ruff: ignore[blind-except]
+    except DECODE_ERRORS:
         # An unreadable envelope is not a routing decision. Hand it to a
         # catch-all subscriber so the regular pipeline reports the parsing
         # error under the user's ack policy.

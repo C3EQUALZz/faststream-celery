@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from faststream.exceptions import IncorrectState
 from kombu import Connection, Consumer, Exchange, Queue
 
+from faststream_celery.exceptions import CONNECTION_ERRORS, SETTLE_ERRORS
 from faststream_celery.message import ConsumerMessage
 
 if TYPE_CHECKING:
@@ -60,6 +61,7 @@ class ConsumerBridge:
         self._started = threading.Event()
         self._prefetch_changed = threading.Event()
         self._error: BaseException | None = None
+        self._consuming = False
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -83,6 +85,11 @@ class ConsumerBridge:
             self._thread = None
             raise error
 
+        if not self._consuming:
+            self._thread = None
+            msg = f"The consumer of {self._queue_name!r} stopped before consuming."
+            raise IncorrectState(msg)
+
     async def stop(self) -> None:
         """Stop the consumer thread and close the read connection."""
         self._stop_event.set()
@@ -92,13 +99,7 @@ class ConsumerBridge:
             await asyncio.to_thread(thread.join)
             self._thread = None
 
-        # Unblock ack executors submitted after the thread has stopped.
-        while True:
-            try:
-                _, future = self._actions.get_nowait()
-            except queue.Empty:
-                break
-            _resolve_future_error(future, IncorrectState("Consumer is stopped."))
+        self._abandon_actions()
 
     def raise_prefetch(self, count: int) -> None:
         """Widen the QoS window; the consumer thread applies it."""
@@ -133,12 +134,16 @@ class ConsumerBridge:
         try:
             self._consume_loop(connection)
 
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except CONNECTION_ERRORS as exc:
             self._error = exc
-            self._started.set()
 
         finally:
-            with suppress(Exception):
+            # `start()` waits on this, so it must be set on every path —
+            # `_consuming` tells the two apart.
+            self._started.set()
+            self._abandon_actions()
+
+            with suppress(*CONNECTION_ERRORS):
                 connection.close()
 
     def _consume_loop(self, connection: Connection) -> None:
@@ -163,6 +168,7 @@ class ConsumerBridge:
         )
         consumer.consume()
 
+        self._consuming = True
         self._started.set()
 
         while not self._stop_event.is_set():
@@ -189,9 +195,23 @@ class ConsumerBridge:
 
             try:
                 action()
-            except Exception as exc:  # ruff: ignore[blind-except]
+            except SETTLE_ERRORS as exc:
                 if loop is not None:
                     loop.call_soon_threadsafe(_resolve_future_error, future, exc)
             else:
                 if loop is not None:
                     loop.call_soon_threadsafe(_resolve_future, future)
+
+    def _abandon_actions(self) -> None:
+        """Fail every ack still queued, so no caller waits on a dead thread."""
+        while True:
+            try:
+                _, future = self._actions.get_nowait()
+            except queue.Empty:
+                return
+
+            error = IncorrectState("Consumer is stopped.")
+            if self._loop is None:
+                _resolve_future_error(future, error)
+            else:
+                self._loop.call_soon_threadsafe(_resolve_future_error, future, error)

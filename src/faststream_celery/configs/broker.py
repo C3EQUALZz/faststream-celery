@@ -40,7 +40,12 @@ class CeleryBrokerConfig(BrokerConfig):
     def make_connection(self) -> Connection:
         """Build a fresh kombu connection (each consumer thread gets its own)."""
         security_options = parse_security(self.security)
-        ssl = self.ssl if self.ssl is not None else security_options.pop("ssl", None)
+
+        # `ssl=` is the kombu-level escape hatch, so it wins over whatever the
+        # security object asked for.
+        security_ssl = security_options.pop("ssl", None)
+        ssl = self.ssl if self.ssl is not None else security_ssl
+
         return Connection(
             self.url,
             transport_options=self.transport_options,

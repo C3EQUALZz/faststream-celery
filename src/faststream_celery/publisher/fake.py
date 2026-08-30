@@ -4,7 +4,7 @@ from typing_extensions import override
 
 from faststream_celery._internal import FakePublisher
 from faststream_celery.response import CeleryPublishCommand
-from faststream_celery.result import build_success
+from faststream_celery.schemas.result import build_success
 
 if TYPE_CHECKING:
     from faststream.response import PublishCommand

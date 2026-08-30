@@ -3,7 +3,7 @@ from faststream.exceptions import SetupError
 from faststream.response import PublishCommand, PublishType
 
 from faststream_celery.response import CeleryPublishCommand
-from faststream_celery.task import CeleryTask
+from faststream_celery.schemas.task import CeleryTask
 
 
 def test_command_requires_queue() -> None:

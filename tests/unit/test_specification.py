@@ -5,7 +5,7 @@ import pytest
 from faststream.specification import AsyncAPI
 
 from faststream_celery import CeleryBroker, CeleryRouter
-from faststream_celery.specification import build_topology
+from faststream_celery.schemas.topology import build_topology
 
 
 def _schema(broker: CeleryBroker) -> dict[str, Any]:

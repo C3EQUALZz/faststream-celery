@@ -12,19 +12,44 @@ from datetime import datetime
 from typing import Any
 
 from kombu import Message
+from typing_extensions import override
 
 from faststream_celery import CeleryBroker, CeleryTask
 from faststream_celery.message import ConsumerMessage
-from faststream_celery.task import build_task_envelope
+from faststream_celery.schemas.task import build_task_envelope
 
 # kombu's in-process transport: a real Consumer, real acks, real
-# `drain_events`, no broker to run.
+# `drain_events`, and no broker to run.
 MEMORY_URL = "memory://faststream-celery/"
 
 JSON_CONTENT_TYPE = "application/json"
 
 DEFAULT_TASK = "proj.tasks.add"
 DEFAULT_TASK_ID = "task-id-1"
+
+
+class RecordingMessage(Message):
+    """A kombu message that settles with no channel, and remembers how.
+
+    Lets a test assert on acknowledgements without patching kombu: the real
+    `Message.ack()` needs a channel, and a `MagicMock` would not move the
+    message's own state, which the broker reads back.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.acks: list[bool] = []
+        self.rejects: list[bool] = []
+
+    @override
+    def ack(self, multiple: bool = False) -> None:
+        self.acks.append(multiple)
+        self._state = "ACK"
+
+    @override
+    def reject(self, requeue: bool = False) -> None:
+        self.rejects.append(requeue)
+        self._state = "REJECTED"
 
 
 async def run_inline(action: Callable[[], None]) -> None:
@@ -38,9 +63,13 @@ def raw_message(
     headers: Mapping[str, Any] | None = None,
     properties: Mapping[str, Any] | None = None,
     content_type: str | None = JSON_CONTENT_TYPE,
-) -> Message:
-    """A kombu message as a consumer would have received it."""
-    return Message(
+) -> RecordingMessage:
+    """A kombu message as a consumer would have received it.
+
+    The body goes in as bytes, the way every real transport delivers it; the
+    kombu stubs describe the narrower `str` a producer may pass instead.
+    """
+    return RecordingMessage(
         body=json.dumps(body).encode(),
         content_type=content_type,
         content_encoding="utf-8",
@@ -68,7 +97,7 @@ def consumer_message(
     )
 
 
-def task_message(
+def task_message(  # ruff: ignore[too-many-arguments]
     task: str = DEFAULT_TASK,
     *,
     args: Sequence[Any] = (),
@@ -115,6 +144,12 @@ def v1_task_message(
             **extra,
         },
     )
+
+
+def recorded(msg: ConsumerMessage) -> RecordingMessage:
+    """The recording message behind a consumer message."""
+    assert isinstance(msg.message, RecordingMessage)
+    return msg.message
 
 
 @asynccontextmanager

@@ -5,15 +5,13 @@ from typing import TYPE_CHECKING, NamedTuple
 from faststream.message import decode_message
 
 from ._internal import DecodedMessage, dump_json
+from .exceptions import DECODE_ERRORS
 from .message import CeleryMessage, ConsumerMessage
-from .task import ensure_aware
+from .schemas.task import ensure_aware
 from .types import HeadersType, MutableHeaders
 
 if TYPE_CHECKING:
     from kombu import Message
-
-# Celery's default `accept_content`.
-SERIALIZATION_ACCEPT = ["json"]
 
 
 class Schedule(NamedTuple):
@@ -157,7 +155,7 @@ def _parse_v1_body(body: HeadersType) -> tuple[MutableHeaders, bytes]:
 def _try_decode(raw: "Message") -> DecodedMessage:
     try:
         decoded: DecodedMessage = raw.decode()
-    except Exception:  # ruff: ignore[blind-except]
+    except DECODE_ERRORS:
         # A body we cannot decode is not a task message; the user's decoder
         # gets the raw bytes and decides what to do with them.
         return None

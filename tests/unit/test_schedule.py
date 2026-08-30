@@ -1,150 +1,28 @@
 import asyncio
-import json
-from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+from faststream.exceptions import SetupError
 from faststream.middlewares import AckPolicy
-from kombu import Message
 
 from faststream_celery import CeleryBroker, CeleryTask
 from faststream_celery.message import ConsumerMessage
 from faststream_celery.parser import extract_schedule, parse_iso8601, read_headers
+from faststream_celery.schemas.task import build_task_envelope
 from faststream_celery.subscriber.scheduler import EtaScheduler
 from faststream_celery.subscriber.usecase import CelerySubscriber
-from faststream_celery.task import build_task_envelope
+from tests.helpers import consumer_message, recorded, task_message
+
+NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-async def _run_inline(action: Callable[[], None]) -> None:
-    action()
-
-
-def _task_message(
-    *,
-    eta: datetime | None = None,
-    expires: datetime | float | None = None,
-) -> ConsumerMessage:
-    envelope = build_task_envelope(
-        CeleryTask("proj.tasks.add", args=[1, 2], eta=eta, expires=expires),
-        task_id="task-id-1",
-    )
-    raw = Message(
-        body=json.dumps(envelope.body).encode(),
-        content_type="application/json",
-        content_encoding="utf-8",
-        headers=dict(envelope.headers),
-        properties={},
-    )
-    return ConsumerMessage(raw, _run_inline)
-
-
-def test_countdown_becomes_an_eta_header() -> None:
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-    envelope = build_task_envelope(
-        CeleryTask("proj.tasks.add", countdown=30),
-        task_id="task-id-1",
-        now=now,
-    )
-
-    assert envelope.headers["eta"] == "2026-01-01T00:00:30+00:00"
-    assert envelope.headers["expires"] is None
-
-
-def test_relative_expires_becomes_an_absolute_header() -> None:
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-    envelope = build_task_envelope(
-        CeleryTask("proj.tasks.add", expires=60),
-        task_id="task-id-1",
-        now=now,
-    )
-
-    assert envelope.headers["expires"] == "2026-01-01T00:01:00+00:00"
-
-
-def test_naive_eta_is_treated_as_utc() -> None:
-    envelope = build_task_envelope(
-        CeleryTask("proj.tasks.add", eta=datetime(2026, 1, 1)),  # ruff: ignore[call-datetime-without-tzinfo]
-        task_id="task-id-1",
-    )
-
-    assert envelope.headers["eta"] == "2026-01-01T00:00:00+00:00"
-
-
-def test_countdown_and_eta_are_mutually_exclusive() -> None:
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        CeleryTask("proj.tasks.add", countdown=1, eta=datetime.now(timezone.utc))
-
-
-def test_parse_iso8601_accepts_the_z_suffix() -> None:
-    assert parse_iso8601("2026-01-01T00:00:00Z") == datetime(
-        2026,
-        1,
-        1,
-        tzinfo=timezone.utc,
-    )
-
-
-def test_parse_iso8601_rejects_garbage() -> None:
-    assert parse_iso8601("not-a-date") is None
-    assert parse_iso8601(None) is None
-
-
-def test_extract_schedule_reads_both_headers() -> None:
-    eta = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    expires = eta + timedelta(minutes=5)
-
-    message = _task_message(eta=eta, expires=expires)
-    schedule = extract_schedule(read_headers(message.message))
-
-    assert schedule.eta == eta
-    assert schedule.expires == expires
-
-
-@pytest.mark.asyncio()
-async def test_scheduler_dispatches_after_the_delay() -> None:
-    dispatched: list[str] = []
-
-    async def dispatch(msg: str) -> None:
-        dispatched.append(msg)
-
-    scheduler: EtaScheduler[str] = EtaScheduler(dispatch)
-    scheduler.schedule("task", delay=0.01)
-
-    assert scheduler.pending == 1
-    assert dispatched == []
-
-    await asyncio.sleep(0.05)
-
-    assert dispatched == ["task"]
-    assert scheduler.pending == 0
-
-
-@pytest.mark.asyncio()
-async def test_scheduler_stop_cancels_pending_messages() -> None:
-    dispatched: list[str] = []
-
-    async def dispatch(msg: str) -> None:
-        dispatched.append(msg)
-
-    scheduler: EtaScheduler[str] = EtaScheduler(dispatch)
-    scheduler.schedule("task", delay=5)
-
-    await scheduler.stop()
-    await asyncio.sleep(0.01)
-
-    assert dispatched == []
-    assert scheduler.pending == 0
-
-
-def _subscriber() -> CelerySubscriber:
-    broker = CeleryBroker()
+def subscribed(broker: CeleryBroker, **kwargs: Any) -> CelerySubscriber:
+    """A subscriber ready to consume, without a connection to start against."""
     # `_drop_expired` logs, and the logger is only wired up on connect.
     broker._setup_logger()
 
-    subscriber = broker.subscriber("celery", task="proj.tasks.add")
+    subscriber = broker.subscriber("celery", task="proj.tasks.add", **kwargs)
 
     @subscriber
     async def handler(args: list[int], kwargs: dict[str, Any]) -> None: ...
@@ -156,129 +34,310 @@ def _subscriber() -> CelerySubscriber:
     return subscriber
 
 
-@pytest.mark.asyncio()
-async def test_future_eta_defers_instead_of_consuming() -> None:
-    subscriber = _subscriber()
-    consumed: list[ConsumerMessage] = []
-    subscriber.consume_one = consumed.append  # type: ignore[method-assign,assignment]
+class TestEtaHeaders:
+    def test_countdown_becomes_an_eta(self) -> None:
+        envelope = build_task_envelope(
+            CeleryTask("proj.tasks.add", countdown=30),
+            task_id="task-id-1",
+            now=NOW,
+        )
 
-    message = _task_message(eta=datetime.now(timezone.utc) + timedelta(seconds=30))
-    await subscriber.dispatch(message)
+        assert envelope.headers["eta"] == "2026-01-01T00:00:30+00:00"
+        assert envelope.headers["expires"] is None
 
-    assert consumed == []
-    assert subscriber._scheduler.pending == 1
+    def test_relative_expires_becomes_absolute(self) -> None:
+        envelope = build_task_envelope(
+            CeleryTask("proj.tasks.add", expires=60),
+            task_id="task-id-1",
+            now=NOW,
+        )
 
-    await subscriber._scheduler.stop()
+        assert envelope.headers["expires"] == "2026-01-01T00:01:00+00:00"
+
+    def test_absolute_eta_is_kept(self) -> None:
+        envelope = build_task_envelope(
+            CeleryTask("proj.tasks.add", eta=NOW + timedelta(days=1)),
+            task_id="task-id-1",
+            now=NOW,
+        )
+
+        assert envelope.headers["eta"] == "2026-01-02T00:00:00+00:00"
+
+    def test_naive_eta_is_treated_as_utc(self) -> None:
+        envelope = build_task_envelope(
+            CeleryTask("proj.tasks.add", eta=datetime(2026, 1, 1)),  # ruff: ignore[call-datetime-without-tzinfo]
+            task_id="task-id-1",
+        )
+
+        assert envelope.headers["eta"] == "2026-01-01T00:00:00+00:00"
+
+    def test_a_non_utc_eta_keeps_its_offset(self) -> None:
+        eta = datetime(2026, 1, 1, tzinfo=timezone(timedelta(hours=3)))
+
+        envelope = build_task_envelope(
+            CeleryTask("proj.tasks.add", eta=eta),
+            task_id="task-id-1",
+        )
+
+        assert envelope.headers["eta"] == "2026-01-01T00:00:00+03:00"
+
+    def test_countdown_and_eta_are_mutually_exclusive(self) -> None:
+        with pytest.raises(SetupError, match="mutually exclusive"):
+            CeleryTask("proj.tasks.add", countdown=1, eta=NOW)
+
+    def test_zero_countdown_is_still_scheduled(self) -> None:
+        """`countdown=0` differs from no countdown: it names a due time."""
+        envelope = build_task_envelope(
+            CeleryTask("proj.tasks.add", countdown=0),
+            task_id="task-id-1",
+            now=NOW,
+        )
+
+        assert envelope.headers["eta"] == "2026-01-01T00:00:00+00:00"
 
 
-@pytest.mark.asyncio()
-async def test_past_eta_is_consumed_immediately() -> None:
-    subscriber = _subscriber()
-    consumed: list[ConsumerMessage] = []
+class TestIso8601:
+    @pytest.mark.parametrize(
+        "value",
+        (
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:00:00",
+        ),
+    )
+    def test_supported_shapes_parse_to_utc(self, value: str) -> None:
+        assert parse_iso8601(value) == NOW
 
+    @pytest.mark.parametrize("value", ("not-a-date", "", None, 12345, []))
+    def test_unreadable_values_become_none(self, value: object) -> None:
+        assert parse_iso8601(value) is None
+
+    def test_a_datetime_passes_through(self) -> None:
+        assert parse_iso8601(NOW) == NOW
+
+    def test_extract_reads_both_headers(self) -> None:
+        expires = NOW + timedelta(minutes=5)
+
+        message = task_message(eta=NOW, expires=expires)
+        schedule = extract_schedule(read_headers(message.message))
+
+        assert schedule.eta == NOW
+        assert schedule.expires == expires
+
+    def test_extract_of_a_plain_message_is_empty(self) -> None:
+        schedule = extract_schedule(read_headers(consumer_message({"a": 1}).message))
+
+        assert schedule.eta is None
+        assert schedule.expires is None
+
+
+class TestEtaScheduler:
+    @pytest.mark.asyncio()
+    async def test_dispatches_after_the_delay(self) -> None:
+        dispatched: list[str] = []
+
+        async def dispatch(msg: str) -> None:
+            dispatched.append(msg)
+
+        scheduler: EtaScheduler[str] = EtaScheduler(dispatch)
+        scheduler.schedule("task", delay=0.01)
+
+        assert scheduler.pending == 1
+        assert dispatched == []
+
+        await asyncio.sleep(0.05)
+
+        assert dispatched == ["task"]
+        assert scheduler.pending == 0
+
+    @pytest.mark.asyncio()
+    async def test_stop_cancels_pending_messages(self) -> None:
+        dispatched: list[str] = []
+
+        async def dispatch(msg: str) -> None:
+            dispatched.append(msg)
+
+        scheduler: EtaScheduler[str] = EtaScheduler(dispatch)
+        scheduler.schedule("task", delay=5)
+
+        await scheduler.stop()
+        await asyncio.sleep(0.01)
+
+        assert dispatched == []
+        assert scheduler.pending == 0
+
+    @pytest.mark.asyncio()
+    async def test_stop_is_idempotent(self) -> None:
+        scheduler: EtaScheduler[str] = EtaScheduler(_never)
+
+        await scheduler.stop()
+        await scheduler.stop()
+
+        assert scheduler.pending == 0
+
+    @pytest.mark.asyncio()
+    async def test_several_messages_wait_independently(self) -> None:
+        dispatched: list[str] = []
+
+        async def dispatch(msg: str) -> None:
+            dispatched.append(msg)
+
+        scheduler: EtaScheduler[str] = EtaScheduler(dispatch)
+        scheduler.schedule("soon", delay=0.01)
+        scheduler.schedule("later", delay=5)
+
+        await asyncio.sleep(0.05)
+
+        assert dispatched == ["soon"]
+        assert scheduler.pending == 1
+
+        await scheduler.stop()
+
+
+async def _never(msg: str) -> None:  # pragma: no cover - never scheduled
+    raise AssertionError
+
+
+class TestSubscriberDispatch:
+    @pytest.mark.asyncio()
+    async def test_a_future_eta_is_deferred(self, broker: CeleryBroker) -> None:
+        subscriber = subscribed(broker)
+        consumed: list[ConsumerMessage] = []
+        subscriber.consume_one = _collect(consumed)  # type: ignore[method-assign]
+
+        message = task_message(eta=_in(seconds=30))
+        await subscriber.dispatch(message)
+
+        assert consumed == []
+        assert subscriber._scheduler.pending == 1
+
+        await subscriber._scheduler.stop()
+
+    @pytest.mark.asyncio()
+    async def test_a_past_eta_is_consumed_at_once(self, broker: CeleryBroker) -> None:
+        subscriber = subscribed(broker)
+        consumed: list[ConsumerMessage] = []
+        subscriber.consume_one = _collect(consumed)  # type: ignore[method-assign]
+
+        await subscriber.dispatch(task_message(eta=_in(seconds=-30)))
+
+        assert len(consumed) == 1
+
+    @pytest.mark.asyncio()
+    async def test_a_plain_task_is_consumed_at_once(
+        self,
+        broker: CeleryBroker,
+    ) -> None:
+        subscriber = subscribed(broker)
+        consumed: list[ConsumerMessage] = []
+        subscriber.consume_one = _collect(consumed)  # type: ignore[method-assign]
+
+        await subscriber.dispatch(task_message())
+
+        assert len(consumed) == 1
+        assert subscriber._scheduler.pending == 0
+
+    @pytest.mark.asyncio()
+    async def test_an_expired_task_is_dropped_and_acked(
+        self,
+        broker: CeleryBroker,
+    ) -> None:
+        subscriber = subscribed(broker)
+        consumed: list[ConsumerMessage] = []
+        subscriber.consume_one = _collect(consumed)  # type: ignore[method-assign]
+
+        message = task_message(expires=_in(seconds=-1))
+        await subscriber.dispatch(message)
+
+        assert consumed == []
+        assert recorded(message).acks == [False]
+
+    @pytest.mark.asyncio()
+    async def test_expiry_wins_over_a_future_eta(self, broker: CeleryBroker) -> None:
+        """A task that expires before it is due never runs."""
+        subscriber = subscribed(broker)
+        consumed: list[ConsumerMessage] = []
+        subscriber.consume_one = _collect(consumed)  # type: ignore[method-assign]
+
+        message = task_message(eta=_in(seconds=30), expires=_in(seconds=-1))
+        await subscriber.dispatch(message)
+
+        assert consumed == []
+        assert subscriber._scheduler.pending == 0
+        assert recorded(message).acks == [False]
+
+    @pytest.mark.asyncio()
+    async def test_a_future_expiry_does_not_drop(self, broker: CeleryBroker) -> None:
+        subscriber = subscribed(broker)
+        consumed: list[ConsumerMessage] = []
+        subscriber.consume_one = _collect(consumed)  # type: ignore[method-assign]
+
+        await subscriber.dispatch(task_message(expires=_in(seconds=30)))
+
+        assert len(consumed) == 1
+
+    @pytest.mark.asyncio()
+    async def test_an_unreadable_body_is_consumed_not_scheduled(
+        self,
+        broker: CeleryBroker,
+    ) -> None:
+        """A parsing error belongs to the pipeline, not to the scheduler."""
+        subscriber = subscribed(broker)
+        consumed: list[ConsumerMessage] = []
+        subscriber.consume_one = _collect(consumed)  # type: ignore[method-assign]
+
+        await subscriber.dispatch(
+            consumer_message([[1, 2]], headers={"task": "proj.tasks.add"}),
+        )
+
+        assert len(consumed) == 1
+
+
+class TestSettlingUnhandledMessages:
+    @pytest.mark.asyncio()
+    async def test_a_filtered_out_message_is_rejected(
+        self,
+        broker: CeleryBroker,
+    ) -> None:
+        """Unsettled, it would hold a prefetch slot for good."""
+        subscriber = subscribed(broker)
+
+        message = task_message("proj.tasks.other")
+        await subscriber.consume(message)
+
+        assert recorded(message).rejects == [False]
+
+    @pytest.mark.asyncio()
+    async def test_a_handled_message_is_not_rejected(
+        self,
+        broker: CeleryBroker,
+    ) -> None:
+        subscriber = subscribed(broker)
+
+        message = task_message()
+        await subscriber.consume(message)
+
+        assert recorded(message).acks == [False]
+        assert recorded(message).rejects == []
+
+    @pytest.mark.asyncio()
+    async def test_manual_ack_policy_leaves_the_message_alone(self) -> None:
+        broker = CeleryBroker(ack_policy=AckPolicy.MANUAL)
+        subscriber = subscribed(broker)
+
+        message = task_message("proj.tasks.other")
+        await subscriber.consume(message)
+
+        assert recorded(message).rejects == []
+        assert recorded(message).acks == []
+
+
+def _in(*, seconds: float) -> datetime:
+    return datetime.now(timezone.utc) + timedelta(seconds=seconds)
+
+
+def _collect(sink: list[ConsumerMessage]) -> Any:
     async def consume_one(msg: ConsumerMessage) -> None:
-        consumed.append(msg)
+        sink.append(msg)
 
-    subscriber.consume_one = consume_one  # type: ignore[method-assign]
-
-    message = _task_message(eta=datetime.now(timezone.utc) - timedelta(seconds=30))
-    await subscriber.dispatch(message)
-
-    assert len(consumed) == 1
-
-
-@pytest.mark.asyncio()
-async def test_expired_task_is_dropped_and_acked() -> None:
-    subscriber = _subscriber()
-    consumed: list[ConsumerMessage] = []
-
-    async def consume_one(msg: ConsumerMessage) -> None:
-        consumed.append(msg)
-
-    subscriber.consume_one = consume_one  # type: ignore[method-assign]
-
-    acked: list[bool] = []
-    message = _task_message(expires=datetime.now(timezone.utc) - timedelta(seconds=1))
-    message.message.ack = lambda *_args, **_kwargs: acked.append(True)
-
-    await subscriber.dispatch(message)
-
-    assert consumed == []
-    assert acked == [True]
-
-
-@pytest.mark.asyncio()
-async def test_plain_task_is_consumed_immediately() -> None:
-    subscriber = _subscriber()
-    consumed: list[ConsumerMessage] = []
-
-    async def consume_one(msg: ConsumerMessage) -> None:
-        consumed.append(msg)
-
-    subscriber.consume_one = consume_one  # type: ignore[method-assign]
-
-    await subscriber.dispatch(_task_message())
-
-    assert len(consumed) == 1
-    assert subscriber._scheduler.pending == 0
-
-
-@pytest.mark.asyncio()
-async def test_filtered_out_message_is_rejected() -> None:
-    """An unmatched message must be settled or the prefetch window stalls."""
-    subscriber = _subscriber()
-
-    rejected: list[bool] = []
-    message = _task_message()
-    message.message.headers["task"] = "proj.tasks.other"
-    message.message.reject = lambda requeue=False: rejected.append(requeue)
-
-    await subscriber.consume(message)
-
-    assert rejected == [False]
-
-
-@pytest.mark.asyncio()
-async def test_handled_message_is_not_rejected_twice() -> None:
-    subscriber = _subscriber()
-
-    rejected: list[bool] = []
-    acked: list[bool] = []
-    message = _task_message()
-
-    def ack(multiple: bool = False) -> None:
-        # A real kombu message needs a channel to ack; record the state
-        # change the broker would have made instead.
-        message.message._state = "ACK"
-        acked.append(True)
-
-    message.message.ack = ack
-    message.message.reject = lambda requeue=False: rejected.append(requeue)
-
-    await subscriber.consume(message)
-
-    assert acked == [True]
-    assert rejected == []
-
-
-@pytest.mark.asyncio()
-async def test_manual_ack_policy_leaves_the_message_alone() -> None:
-    broker = CeleryBroker(ack_policy=AckPolicy.MANUAL)
-    broker._setup_logger()
-
-    subscriber = broker.subscriber("celery", task="proj.tasks.add")
-
-    @subscriber
-    async def handler() -> None: ...
-
-    subscriber._build_fastdepends_model()
-    subscriber._post_start()
-
-    rejected: list[bool] = []
-    message = _task_message()
-    message.message.headers["task"] = "proj.tasks.other"
-    message.message.reject = lambda requeue=False: rejected.append(requeue)
-
-    await subscriber.consume(message)
-
-    assert rejected == []
+    return consume_one

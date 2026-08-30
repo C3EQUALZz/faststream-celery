@@ -9,7 +9,12 @@ from faststream.response import PublishType
 
 from faststream_celery import CeleryBroker, CeleryTask, TestCeleryBroker
 from faststream_celery.response import CeleryPublishCommand
-from faststream_celery.result import FAILURE, SUCCESS, build_failure, build_success
+from faststream_celery.schemas.result import (
+    FAILURE,
+    SUCCESS,
+    build_failure,
+    build_success,
+)
 
 
 def test_build_success_envelope() -> None:

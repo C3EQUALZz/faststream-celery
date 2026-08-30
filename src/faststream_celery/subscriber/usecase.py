@@ -18,15 +18,16 @@ from faststream_celery._internal import (
     default_filter,
     process_msg,
 )
+from faststream_celery.exceptions import DECODE_ERRORS, SETTLE_ERRORS
 from faststream_celery.message import ConsumerMessage
 from faststream_celery.parser import (
-    SERIALIZATION_ACCEPT,
     CeleryParser,
     Schedule,
     extract_schedule,
     read_headers,
 )
 from faststream_celery.publisher.fake import CeleryFakePublisher
+from faststream_celery.schemas.constants import SERIALIZATION_ACCEPT
 
 from .scheduler import EtaScheduler
 
@@ -60,7 +61,7 @@ def _task_filter(task: str, msg: StreamMessage[Any]) -> bool:
 def _read_schedule(msg: ConsumerMessage) -> Schedule:
     try:
         return extract_schedule(read_headers(msg.message))
-    except Exception:  # ruff: ignore[blind-except]
+    except DECODE_ERRORS:
         # A body we cannot read is not a scheduling problem. Let the regular
         # pipeline surface the parsing error under the user's ack policy.
         return _NO_SCHEDULE
@@ -204,7 +205,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
             extra=self.get_log_context(None),
         )
 
-        with suppress(Exception):
+        with suppress(*SETTLE_ERRORS, IncorrectState):
             await msg.executor(msg.message.ack)
 
     @override
@@ -224,7 +225,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
         if self.ack_policy is AckPolicy.MANUAL or msg.message.acknowledged:
             return
 
-        with suppress(Exception):
+        with suppress(*SETTLE_ERRORS, IncorrectState):
             await msg.executor(partial(msg.message.reject, requeue=False))
 
     async def consume_one(self, msg: ConsumerMessage) -> None:

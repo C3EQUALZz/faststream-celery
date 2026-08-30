@@ -18,19 +18,21 @@ from faststream_celery._internal import (
     ProducerProto,
 )
 from faststream_celery.message import ConsumerMessage, run_inline
-from faststream_celery.parser import SERIALIZATION_ACCEPT, CeleryParser
+from faststream_celery.parser import CeleryParser
 from faststream_celery.response import CeleryPublishCommand
-from faststream_celery.task import CeleryTask, build_task_envelope
-from faststream_celery.types import HeadersType, TaskBody
+from faststream_celery.schemas.constants import (
+    PERSISTENT_DELIVERY_MODE,
+    SERIALIZATION_ACCEPT,
+    SERIALIZER,
+)
+from faststream_celery.schemas.task import CeleryTask, build_task_envelope
+from faststream_celery.types import MutableHeaders, TaskBody
 
 if TYPE_CHECKING:
     from fast_depends.library.serializer import SerializerProto
     from kombu import Message
 
     from faststream_celery._internal import CustomCallable
-
-# Celery's default `task_default_delivery_mode` — persistent messages.
-PERSISTENT_DELIVERY_MODE = 2
 
 DEFAULT_REQUEST_TIMEOUT = 30.0
 
@@ -51,7 +53,7 @@ class Payload(NamedTuple):
     body: TaskBody | bytes
     serializer: str | None
     content_type: str | None
-    headers: HeadersType | None
+    headers: MutableHeaders | None
     correlation_id: str | None
     delivery_mode: int | None
 
@@ -175,7 +177,7 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
 
         return Payload(
             body=envelope.body,
-            serializer="json",
+            serializer=SERIALIZER,
             content_type=None,
             headers=headers,
             correlation_id=task_id,

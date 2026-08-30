@@ -7,7 +7,7 @@ from typing_extensions import override
 
 from faststream_celery._internal import PublisherUsecase
 from faststream_celery.response import CeleryPublishCommand
-from faststream_celery.task import CelerySendableMessage
+from faststream_celery.schemas.task import CelerySendableMessage
 from faststream_celery.types import MutableHeaders
 
 if TYPE_CHECKING:
