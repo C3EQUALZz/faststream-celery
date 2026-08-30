@@ -2,7 +2,7 @@ name: SonarQube
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
 
 # Organization and project key live in sonar-project.properties.
