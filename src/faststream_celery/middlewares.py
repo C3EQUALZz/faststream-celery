@@ -2,13 +2,14 @@
 
 from typing import TYPE_CHECKING, Any
 
+from faststream.message.source_type import SourceType
 from faststream.middlewares import BaseMiddleware
 from faststream.response import PublishType
 from typing_extensions import override
 
 from faststream_celery.message import ConsumerMessage
 from faststream_celery.response import CeleryPublishCommand
-from faststream_celery.schemas.result import build_failure
+from faststream_celery.schemas.result import TaskResult, build_failure, build_success
 
 if TYPE_CHECKING:
     from faststream.message import StreamMessage
@@ -18,11 +19,15 @@ if TYPE_CHECKING:
 
 
 class CeleryResultMiddleware(BaseMiddleware[CeleryPublishCommand, ConsumerMessage]):
-    """Reports a failed handler back to the Celery caller.
+    """Reports what a handler did back to whoever sent the task.
 
-    A successful result travels the stock FastStream reply path (see
-    ``CeleryFakePublisher``), which never runs when the handler raises — so
-    the ``FAILURE`` envelope is published from here instead.
+    Two channels, and a task may use either or both:
+
+    - a ``reply_to`` queue, the AMQP RPC path. Success travels the stock
+      FastStream reply path (``CeleryFakePublisher``), which never runs when
+      the handler raises, so the ``FAILURE`` envelope is published here.
+    - a result backend, where both outcomes are recorded under
+      ``celery-task-meta-<id>``.
     """
 
     def __init__(
@@ -42,34 +47,51 @@ class CeleryResultMiddleware(BaseMiddleware[CeleryPublishCommand, ConsumerMessag
         call_next: "AsyncFuncAny",
         msg: "StreamMessage[Any]",
     ) -> Any:
-        try:
+        if msg.source_type is not SourceType.CONSUME:
+            # A reply travelling back to `request()` runs this stack too, and
+            # a reply is not a task outcome to report.
             return await call_next(msg)
+
+        task_id: str = msg.headers.get("id") or msg.correlation_id
+
+        try:
+            result = await call_next(msg)
 
         # A handler may raise anything; the exception is reported to the
         # Celery caller and then re-raised untouched.
         except Exception as exc:
-            await self._publish_failure(msg, exc)
+            await self._report(msg, build_failure(task_id, exc), reply=True)
             raise
 
-    async def _publish_failure(
+        await self._report(msg, build_success(task_id, result), reply=False)
+        return result
+
+    async def _report(
         self,
         msg: "StreamMessage[Any]",
-        exc: Exception,
+        envelope: TaskResult,
+        *,
+        reply: bool,
     ) -> None:
-        if not msg.reply_to or msg.headers.get("ignore_result"):
+        if msg.headers.get("ignore_result"):
             return
 
-        task_id = msg.headers.get("id") or msg.correlation_id
+        if (backend := self._config.result_backend) is not None:
+            await backend.store(envelope["task_id"], envelope)
 
+        if reply and msg.reply_to:
+            await self._publish_reply(msg.reply_to, envelope)
+
+    async def _publish_reply(self, reply_to: str, envelope: TaskResult) -> None:
         await self._config.producer.publish(
             CeleryPublishCommand(
-                build_failure(task_id, exc),
-                queue=msg.reply_to,
+                envelope,
+                queue=reply_to,
                 # Celery replies go to the default exchange, and the reply
                 # queue belongs to the client — we must not declare it.
                 exchange="",
                 declare=False,
-                correlation_id=task_id,
+                correlation_id=envelope["task_id"],
                 _publish_type=PublishType.REPLY,
             ),
         )

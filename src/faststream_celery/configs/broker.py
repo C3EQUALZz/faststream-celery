@@ -13,6 +13,7 @@ from faststream_celery.subscriber.consumer import ConsumerRegistry
 if TYPE_CHECKING:
     from faststream.security import BaseSecurity
 
+    from faststream_celery.backend import ResultBackend
     from faststream_celery.publisher.producer import CeleryFastProducer
 
 
@@ -31,6 +32,9 @@ class CeleryBrokerConfig(BrokerConfig):
 
     # One kombu consumer per queue, shared by the subscribers on it.
     consumers: ConsumerRegistry = field(default_factory=ConsumerRegistry)
+
+    # Where task results are stored; `None` leaves them on the broker.
+    result_backend: "ResultBackend | None" = None
 
     @property
     def virtual_host(self) -> str:
@@ -63,8 +67,14 @@ class CeleryBrokerConfig(BrokerConfig):
             codec=self.broker_codec or DefaultCodec(),
         )
 
+        if self.result_backend is not None:
+            await self.result_backend.connect()
+
     async def disconnect(self) -> None:
         await self.producer.disconnect()
+
+        if self.result_backend is not None:
+            await self.result_backend.disconnect()
 
     async def is_alive(self, connection: Connection) -> bool:
         """Whether the connection still reaches the broker."""

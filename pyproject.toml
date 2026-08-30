@@ -44,6 +44,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+redis = ["redis>=5.0.0"]
 otel = ["faststream[otel]>=0.7.5"]
 prometheus = ["faststream[prometheus]>=0.7.5"]
 fastapi = ["faststream[fastapi]>=0.7.5"]

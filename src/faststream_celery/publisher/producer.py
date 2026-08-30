@@ -86,6 +86,16 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
         self._producer: Producer | None = None
         self._lock: anyio.Lock | None = None
 
+    @property
+    def parser(self) -> ParserComposition:
+        """The parser a reply travels through."""
+        return self._parser
+
+    @property
+    def decoder(self) -> ParserComposition:
+        """The decoder a reply travels through."""
+        return self._decoder
+
     def connect(
         self,
         connection: Connection,
@@ -121,7 +131,7 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
         async with self._lock:
             await anyio.to_thread.run_sync(
                 partial(
-                    _publish_sync,
+                    publish_sync,
                     producer,
                     payload,
                     destination,
@@ -147,7 +157,7 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
 
         raw = await anyio.to_thread.run_sync(
             partial(
-                _request_sync,
+                request_sync,
                 factory,
                 payload,
                 destination,
@@ -215,7 +225,7 @@ def _destination_of(cmd: CeleryPublishCommand) -> Destination:
     return Destination(exchange=exchange, routing_key=routing_key, declare=declare)
 
 
-def _publish_sync(
+def publish_sync(
     producer: Producer,
     payload: Payload,
     destination: Destination,
@@ -237,7 +247,7 @@ def _publish_sync(
     )
 
 
-def _request_sync(
+def request_sync(
     connection_factory: ConnectionFactory,
     payload: Payload,
     destination: Destination,
@@ -260,7 +270,7 @@ def _request_sync(
         )(channel)
         reply_queue.declare()
 
-        _publish_sync(
+        publish_sync(
             Producer(channel),
             payload,
             destination,

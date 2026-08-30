@@ -3,8 +3,11 @@ from functools import partial
 from typing import Any, NamedTuple, TypeAlias
 
 from faststream.message import StreamMessage
+from faststream.message.source_type import SourceType
 from kombu import Message
 from typing_extensions import override
+
+from faststream_celery.schemas.constants import CONTENT_ENCODING
 
 # Runs a kombu acknowledgement callable on the consumer thread that owns
 # the message's channel (kombu transports are not thread-safe).
@@ -32,6 +35,28 @@ async def run_inline(action: Callable[[], None]) -> None:  # ruff: ignore[unused
     action()
 
 
+def local_message(
+    body: bytes,
+    *,
+    content_type: str,
+    correlation_id: str,
+) -> ConsumerMessage:
+    """Shape a payload we produced ourselves like a received message.
+
+    A result read out of a backend never came off a queue, but the pipeline
+    still expects the broker's own message type.
+    """
+    return ConsumerMessage(
+        Message(
+            body=body,  # type: ignore[arg-type]
+            content_type=content_type,
+            content_encoding=CONTENT_ENCODING,
+            properties={"correlation_id": correlation_id},
+        ),
+        run_inline,
+    )
+
+
 class CeleryMessage(StreamMessage[ConsumerMessage]):
     """A message received from a Celery-compatible queue.
 
@@ -50,6 +75,7 @@ class CeleryMessage(StreamMessage[ConsumerMessage]):
         content_type: str | None = None,
         correlation_id: str | None = None,
         message_id: str | None = None,
+        source_type: SourceType = SourceType.CONSUME,
     ) -> None:
         super().__init__(
             raw_message=raw_message,
@@ -59,6 +85,7 @@ class CeleryMessage(StreamMessage[ConsumerMessage]):
             content_type=content_type,
             correlation_id=correlation_id,
             message_id=message_id,
+            source_type=source_type,
         )
         self._ack_executor = ack_executor
 

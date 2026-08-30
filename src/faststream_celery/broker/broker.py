@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import anyio
 from fast_depends import dependency_provider
 from faststream.message import gen_cor_id
+from faststream.message.source_type import SourceType
 from faststream.middlewares import AckPolicy
 from faststream.response import PublishType
 from faststream.specification.schema import BrokerSpec
@@ -21,12 +22,23 @@ from faststream_celery._internal import (
     BrokerUsecase,
     ContextRepo,
     FastDependsConfig,
+    dump_json,
+    process_msg,
 )
+from faststream_celery.backend import make_result_backend
 from faststream_celery.configs import CeleryBrokerConfig
-from faststream_celery.message import ConsumerMessage
+from faststream_celery.message import (
+    CeleryMessage,
+    ConsumerMessage,
+    local_message,
+)
 from faststream_celery.middlewares import CeleryResultMiddleware
-from faststream_celery.publisher.producer import CeleryFastProducer
+from faststream_celery.publisher.producer import (
+    DEFAULT_REQUEST_TIMEOUT,
+    CeleryFastProducer,
+)
 from faststream_celery.response import CeleryPublishCommand
+from faststream_celery.schemas.constants import CONTENT_TYPE
 from faststream_celery.schemas.task import CelerySendableMessage
 from faststream_celery.types import MutableHeaders
 
@@ -51,7 +63,7 @@ if TYPE_CHECKING:
         CustomCallable,
         IdGenerator,
     )
-    from faststream_celery.message import CeleryMessage
+    from faststream_celery.backend import ResultBackend
 
 
 class CeleryBroker(
@@ -66,6 +78,7 @@ class CeleryBroker(
         *,
         transport_options: dict[str, Any] | None = None,
         ssl: bool | dict[str, Any] | None = None,
+        result_backend: str | None = None,
         security: Optional["BaseSecurity"] = None,
         max_workers: int = 1,
         prefetch_count: int | None = None,
@@ -97,6 +110,9 @@ class CeleryBroker(
             transport_options: kombu transport options (e.g. ``visibility_timeout``
                 for the Redis transport).
             ssl: kombu ``ssl`` connection option (bool or a dict of ssl options).
+            result_backend: Where task results are stored, as a url —
+                ``redis://...`` for the Celery `celery-task-meta` backend.
+                Without one, `request()` waits on an AMQP reply queue.
             security: FastStream security object (SSL context, SASL credentials).
             max_workers: Default number of workers processing messages concurrently.
             prefetch_count: kombu QoS prefetch count (`max_workers` by default).
@@ -130,6 +146,7 @@ class CeleryBroker(
             url=url,
             transport_options=transport_options,
             ssl=ssl,
+            result_backend=make_result_backend(result_backend),
             security=security,
             max_workers=max_workers,
             prefetch_count=prefetch_count,
@@ -280,11 +297,57 @@ class CeleryBroker(
             _publish_type=PublishType.REQUEST,
         )
 
+        backend = self.config.broker_config.result_backend
+        if backend is not None:
+            return await self._request_via_backend(cmd, backend)
+
         msg: CeleryMessage = await super()._basic_request(
             cmd,
             producer=self.config.producer,
         )
         return msg
+
+    async def _request_via_backend(
+        self,
+        cmd: CeleryPublishCommand,
+        backend: "ResultBackend",
+    ) -> "CeleryMessage":
+        """Publish, then wait for the result the executing worker records.
+
+        The worker replies to the backend rather than to us, so the task goes
+        out as an ordinary publish and the result comes back by task id.
+        """
+        task_id = cmd.correlation_id or self.config.id_generator()
+        cmd.correlation_id = task_id
+
+        await super()._basic_publish(cmd, producer=self.config.producer)
+
+        envelope = await backend.wait(
+            task_id,
+            timeout=cmd.timeout or DEFAULT_REQUEST_TIMEOUT,
+        )
+
+        raw = local_message(
+            dump_json(envelope),
+            content_type=CONTENT_TYPE,
+            correlation_id=task_id,
+        )
+
+        # The same pipeline an AMQP reply takes, so the message arrives
+        # parsed, decodable and seen by the broker middlewares.
+        context = self.config.fd_config.context
+        producer = self.config.broker_config.producer
+
+        return cast(
+            "CeleryMessage",
+            await process_msg(
+                msg=raw,
+                middlewares=(m(raw, context=context) for m in self.middlewares),
+                parser=producer.parser,
+                decoder=producer.decoder,
+                source_type=SourceType.RESPONSE,
+            ),
+        )
 
     @override
     async def ping(self, timeout: float | None = 3) -> bool:

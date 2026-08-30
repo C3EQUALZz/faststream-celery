@@ -1,6 +1,7 @@
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import patch
 
@@ -20,13 +21,20 @@ from faststream_celery.schemas.result import (
 def test_build_success_envelope() -> None:
     envelope = build_success("task-id-1", {"value": 3})
 
-    assert envelope == {
-        "task_id": "task-id-1",
-        "status": SUCCESS,
-        "result": {"value": 3},
-        "traceback": None,
-        "children": [],
-    }
+    assert envelope["task_id"] == "task-id-1"
+    assert envelope["status"] == SUCCESS
+    assert envelope["result"] == {"value": 3}
+    assert envelope["traceback"] is None
+    assert envelope["children"] == []
+
+
+def test_an_envelope_is_stamped_with_the_time_it_finished() -> None:
+    """Celery clients read `date_done` off the result meta."""
+    before = datetime.now(timezone.utc)
+
+    envelope = build_success("task-id-1", None)
+
+    assert before <= datetime.fromisoformat(envelope["date_done"])
 
 
 def test_build_failure_envelope() -> None:
@@ -90,13 +98,10 @@ async def test_successful_handler_replies_with_a_result_envelope(queue: str) -> 
     assert reply.exchange == ""
     assert reply.declare is False
     assert reply.correlation_id == "task-id-1"
-    assert reply.body == {
-        "task_id": "task-id-1",
-        "status": SUCCESS,
-        "result": 3,
-        "traceback": None,
-        "children": [],
-    }
+    assert reply.body["task_id"] == "task-id-1"
+    assert reply.body["status"] == SUCCESS
+    assert reply.body["result"] == 3
+    assert reply.body["traceback"] is None
 
 
 @pytest.mark.asyncio()

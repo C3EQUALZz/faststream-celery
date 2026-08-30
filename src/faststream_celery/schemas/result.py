@@ -5,6 +5,7 @@ expects this exact shape (``celery.backends.base.Backend._get_result_meta``).
 """
 
 import traceback
+from datetime import datetime, timezone
 from typing import Literal, TypeAlias
 
 from typing_extensions import TypedDict
@@ -36,6 +37,7 @@ class TaskResult(TypedDict):
     result: SendableMessage
     traceback: str | None
     children: list[SendableMessage]
+    date_done: str
 
 
 def build_success(task_id: str, result: SendableMessage) -> TaskResult:
@@ -46,6 +48,7 @@ def build_success(task_id: str, result: SendableMessage) -> TaskResult:
         result=result,
         traceback=None,
         children=[],
+        date_done=_now(),
     )
 
 
@@ -63,4 +66,9 @@ def build_failure(task_id: str, exc: BaseException) -> TaskResult:
             traceback.format_exception(type(exc), exc, exc.__traceback__),
         ),
         children=[],
+        date_done=_now(),
     )
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
