@@ -15,10 +15,13 @@ from .result import (
     build_failure,
     build_success,
 )
+from .signature import call_args, queue_of, signature
 from .task import (
     CelerySendableMessage,
     CeleryTask,
+    Continuation,
     TaskEnvelope,
+    as_signature,
     build_task_envelope,
     ensure_aware,
 )
@@ -35,14 +38,19 @@ __all__ = (
     "SUCCESS",
     "CelerySendableMessage",
     "CeleryTask",
+    "Continuation",
     "ExceptionInfo",
     "TaskEnvelope",
     "TaskResult",
     "TaskStatus",
     "Topology",
+    "as_signature",
     "build_failure",
     "build_success",
     "build_task_envelope",
     "build_topology",
+    "call_args",
     "ensure_aware",
+    "queue_of",
+    "signature",
 )

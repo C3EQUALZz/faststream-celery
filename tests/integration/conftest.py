@@ -69,6 +69,17 @@ def broker(broker_url: str) -> CeleryBroker:
 
 
 @pytest.fixture()
+def our_queue(queue: str) -> str:
+    """A queue only our broker consumes.
+
+    `queue` is what the `celery_worker` fixture consumes, so a test running
+    both needs a second one — otherwise the broker round-robins between them
+    and either side may get a task the other was meant to run.
+    """
+    return f"{queue}-ours"
+
+
+@pytest.fixture()
 def result_backend(broker_url: str) -> str:
     """Where a Celery client and worker exchange results.
 

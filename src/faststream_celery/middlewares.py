@@ -7,7 +7,9 @@ from faststream.middlewares import BaseMiddleware
 from faststream.response import PublishType
 from typing_extensions import override
 
+from faststream_celery.canvas import CanvasDispatcher
 from faststream_celery.message import ConsumerMessage
+from faststream_celery.parser import read_embed
 from faststream_celery.response import CeleryPublishCommand
 from faststream_celery.schemas.result import TaskResult, build_failure, build_success
 
@@ -28,6 +30,9 @@ class CeleryResultMiddleware(BaseMiddleware[CeleryPublishCommand, ConsumerMessag
       the handler raises, so the ``FAILURE`` envelope is published here.
     - a result backend, where both outcomes are recorded under
       ``celery-task-meta-<id>``.
+
+    It also runs the canvas the task carries: callbacks and the next chain
+    link on success, errbacks on failure.
     """
 
     def __init__(
@@ -40,6 +45,7 @@ class CeleryResultMiddleware(BaseMiddleware[CeleryPublishCommand, ConsumerMessag
     ) -> None:
         super().__init__(msg, context=context)
         self._config = config
+        self._canvas = CanvasDispatcher(config.producer)
 
     @override
     async def consume_scope(
@@ -54,6 +60,8 @@ class CeleryResultMiddleware(BaseMiddleware[CeleryPublishCommand, ConsumerMessag
 
         task_id: str = msg.headers.get("id") or msg.correlation_id
 
+        embed = read_embed(msg.raw_message.message)
+
         try:
             result = await call_next(msg)
 
@@ -61,9 +69,11 @@ class CeleryResultMiddleware(BaseMiddleware[CeleryPublishCommand, ConsumerMessag
         # Celery caller and then re-raised untouched.
         except Exception as exc:
             await self._report(msg, build_failure(task_id, exc), reply=True)
+            await self._canvas.on_failure(msg, embed, task_id)
             raise
 
         await self._report(msg, build_success(task_id, result), reply=False)
+        await self._canvas.on_success(msg, embed, result)
         return result
 
     async def _report(

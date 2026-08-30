@@ -8,10 +8,16 @@ from ._internal import DecodedMessage, dump_json
 from .exceptions import DECODE_ERRORS
 from .message import CeleryMessage, ConsumerMessage
 from .schemas.task import ensure_aware
-from .types import HeadersType, MutableHeaders
+from .types import HeadersType, MutableHeaders, TaskEmbed
 
 if TYPE_CHECKING:
     from kombu import Message
+
+
+# `(args, kwargs, embed)`.
+_V2_BODY_SLOTS = 3
+
+_NO_CANVAS = TaskEmbed(callbacks=None, errbacks=None, chain=None, chord=None)
 
 
 class Schedule(NamedTuple):
@@ -76,6 +82,31 @@ def parse_envelope(raw: "Message") -> tuple[MutableHeaders, bytes]:
         return _parse_v1_body(decoded)
 
     return headers, _as_bytes(raw.body)
+
+
+def read_embed(raw: "Message") -> TaskEmbed:
+    """The canvas slot of a protocol v2 body: what runs after this task.
+
+    Empty for every other kind of message, so a caller can ask without
+    knowing which protocol the sender used.
+    """
+    if not (raw.headers or {}).get("task"):
+        return _NO_CANVAS
+
+    decoded = _try_decode(raw)
+    if not isinstance(decoded, (list, tuple)) or len(decoded) < _V2_BODY_SLOTS:
+        return _NO_CANVAS
+
+    embed = decoded[2]
+    if not isinstance(embed, Mapping):
+        return _NO_CANVAS
+
+    return TaskEmbed(
+        callbacks=embed.get("callbacks"),
+        errbacks=embed.get("errbacks"),
+        chain=embed.get("chain"),
+        chord=embed.get("chord"),
+    )
 
 
 def read_headers(raw: "Message") -> MutableHeaders:

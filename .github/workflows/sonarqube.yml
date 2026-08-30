@@ -34,11 +34,10 @@ jobs:
           cache-dependency-glob: "uv.lock"
           python-version: "3.14"
       - run: uv sync --frozen
-      # --suppress-no-test-exit-code keeps the job green while tests/ is empty.
       - name: Generate coverage (xml)
         run: >-
           uv run pytest tests/unit --cov --cov-report=xml
-          --junit-xml=junit.xml --suppress-no-test-exit-code
+          --junit-xml=junit.xml
       - name: SonarQube scan
         if: ${{ env.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0

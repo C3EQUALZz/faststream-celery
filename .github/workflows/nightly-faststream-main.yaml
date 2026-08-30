@@ -38,4 +38,4 @@ jobs:
 
       # --no-sync: keep the faststream@main install, don't revert to uv.lock.
       - name: Run unit tests
-        run: uv run --no-sync pytest tests/unit --suppress-no-test-exit-code
+        run: uv run --no-sync pytest tests/unit

@@ -26,6 +26,26 @@ KOMBU_VERSIONS = ("==5.3.0", ">=5.3,<6")
 
 FASTSTREAM_MAIN = "faststream @ git+https://github.com/ag2ai/faststream.git@main"
 
+# What `tests/unit` imports beyond the package itself: the optional
+# integrations ship with it, so they are exercised on every matrix point.
+UNIT_TEST_DEPS = (
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "celery-types",
+    "fastapi",
+    "httpx",
+    "opentelemetry-sdk",
+    "prometheus-client",
+    "redis",
+)
+
+INTEGRATION_TEST_DEPS = (
+    *UNIT_TEST_DEPS,
+    "celery",
+    "testcontainers",
+)
+
 
 @nox.session(python=PYTHON_VERSIONS)
 @nox.parametrize("faststream", FASTSTREAM_VERSIONS)
@@ -34,7 +54,7 @@ def tests(session: nox.Session, faststream: str, kombu: str) -> None:
     """Run the unit suite against one point of the matrix."""
     session.install("-e", ".")
     session.install(f"faststream{faststream}", f"kombu{kombu}")
-    session.install("pytest", "pytest-asyncio", "pytest-cov")
+    session.install(*UNIT_TEST_DEPS)
 
     session.run("pytest", "tests/unit", *session.posargs)
 
@@ -48,7 +68,7 @@ def nightly(session: nox.Session) -> None:
     """
     session.install("-e", ".")
     session.install(FASTSTREAM_MAIN)
-    session.install("pytest", "pytest-asyncio", "pytest-cov")
+    session.install(*UNIT_TEST_DEPS)
 
     session.run("pytest", "tests/unit", *session.posargs)
 
@@ -57,13 +77,7 @@ def nightly(session: nox.Session) -> None:
 def integration(session: nox.Session) -> None:
     """Run the integration suite against live Celery (requires Docker)."""
     session.install("-e", ".")
-    session.install(
-        "pytest",
-        "pytest-asyncio",
-        "pytest-cov",
-        "celery",
-        "testcontainers",
-    )
+    session.install(*INTEGRATION_TEST_DEPS)
 
     session.run(
         "pytest",
@@ -78,7 +92,7 @@ def integration(session: nox.Session) -> None:
 def lint(session: nox.Session) -> None:
     """Run ruff and mypy."""
     session.install("-e", ".")
-    session.install("ruff", "mypy", "pytest", "celery", "testcontainers")
+    session.install("ruff", "mypy", *INTEGRATION_TEST_DEPS)
 
     session.run("ruff", "format", "--check", ".")
     session.run("ruff", "check", "--no-fix", ".")

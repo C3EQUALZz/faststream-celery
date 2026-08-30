@@ -1,17 +1,22 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import NamedTuple, TypeAlias
+from typing import TYPE_CHECKING, NamedTuple, TypeAlias
 
 from faststream.exceptions import SetupError
 
 from faststream_celery._internal import SendableMessage
+from faststream_celery.schemas.signature import signature
 from faststream_celery.types import (
     TaskArgs,
     TaskBody,
     TaskEmbed,
     TaskHeaders,
     TaskKwargs,
+    TaskSignature,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 @dataclass
@@ -37,6 +42,17 @@ class CeleryTask:
     expires: datetime | float | None = None
 
     retries: int = 0
+
+    # Canvas: what runs after this task, mirroring `apply_async`.
+    link: "Sequence[Continuation]" = ()
+    link_error: "Sequence[Continuation]" = ()
+    chain: "Sequence[Continuation]" = ()
+
+    # Where this task sits in a wider canvas.
+    root_id: str | None = None
+    parent_id: str | None = None
+    group: str | None = None
+    group_index: int | None = None
 
     def __post_init__(self) -> None:
         if self.countdown is not None and self.eta is not None:
@@ -66,6 +82,22 @@ class CeleryTask:
 
 # Anything `broker.publish()` accepts: a Celery task or a raw FastStream payload.
 CelerySendableMessage: TypeAlias = CeleryTask | SendableMessage
+
+# A canvas step, given either as a task to publish or as a raw signature.
+Continuation: TypeAlias = CeleryTask | TaskSignature
+
+
+def as_signature(step: "Continuation") -> TaskSignature:
+    """Serialize a canvas step, whichever way it was written."""
+    if isinstance(step, CeleryTask):
+        return signature(step.task, args=step.args, kwargs=step.kwargs)
+
+    return step
+
+
+def _steps(steps: "Sequence[Continuation]") -> list[TaskSignature] | None:
+    """An empty canvas slot is `None` on the wire, not an empty list."""
+    return [as_signature(step) for step in steps] or None
 
 
 class TaskEnvelope(NamedTuple):
@@ -114,12 +146,12 @@ def build_task_envelope(
         shadow=None,
         eta=eta.isoformat() if eta is not None else None,
         expires=expires.isoformat() if expires is not None else None,
-        group=None,
-        group_index=None,
+        group=task.group,
+        group_index=task.group_index,
         retries=task.retries,
         timelimit=[None, None],
-        root_id=None,
-        parent_id=None,
+        root_id=task.root_id or task_id,
+        parent_id=task.parent_id,
         argsrepr=repr(args),
         kwargsrepr=repr(kwargs),
         origin=None,
@@ -132,7 +164,12 @@ def build_task_envelope(
     body: TaskBody = (
         args,
         kwargs,
-        TaskEmbed(callbacks=None, errbacks=None, chain=None, chord=None),
+        TaskEmbed(
+            callbacks=_steps(task.link),
+            errbacks=_steps(task.link_error),
+            chain=_steps(task.chain),
+            chord=None,
+        ),
     )
 
     return TaskEnvelope(body=body, headers=headers)

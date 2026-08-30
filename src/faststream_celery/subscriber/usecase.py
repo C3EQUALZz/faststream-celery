@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from .config import CelerySubscriberConfig
     from .consumer import SharedConsumer
 
+
 _NO_SCHEDULE = Schedule(eta=None, expires=None)
 
 
@@ -99,7 +100,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
     @overload
     def __call__(
         self,
-        func: Callable["P_HandlerParams", "T_HandlerReturn"],
+        func: "Callable[P_HandlerParams, T_HandlerReturn]",
         *,
         filter: "Filter[Any]" = default_filter,
         parser: Optional["CustomCallable"] = None,
@@ -117,14 +118,14 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
         decoder: Optional["CustomCallable"] = None,
         dependencies: Iterable["Dependant"] = (),
     ) -> Callable[
-        [Callable["P_HandlerParams", "T_HandlerReturn"]],
+        ["Callable[P_HandlerParams, T_HandlerReturn]"],
         "HandlerCallWrapper[P_HandlerParams, T_HandlerReturn]",
     ]: ...
 
     @override
     def __call__(
         self,
-        func: Callable["P_HandlerParams", "T_HandlerReturn"] | None = None,
+        func: "Callable[P_HandlerParams, T_HandlerReturn] | None" = None,
         *,
         filter: "Filter[Any]" = default_filter,
         parser: Optional["CustomCallable"] = None,
@@ -133,7 +134,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
     ) -> Union[
         "HandlerCallWrapper[P_HandlerParams, T_HandlerReturn]",
         Callable[
-            [Callable["P_HandlerParams", "T_HandlerReturn"]],
+            ["Callable[P_HandlerParams, T_HandlerReturn]"],
             "HandlerCallWrapper[P_HandlerParams, T_HandlerReturn]",
         ],
     ]:

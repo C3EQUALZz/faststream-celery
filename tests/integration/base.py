@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from celery import Celery
 
-from faststream_celery import CeleryBroker, CeleryTask
+from faststream_celery import CeleryBroker, CeleryTask, signature
 from tests.helpers import running
 
 from .celery_tasks import read_log
@@ -327,3 +327,137 @@ class TransportTestcase:
             await wait_for(done)
 
         assert sorted(seen) == list(range(total))
+
+    @pytest.mark.asyncio()
+    async def test_a_chain_runs_through_us_to_a_celery_worker(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        our_queue: str,
+        celery_worker: Path,
+        event: asyncio.Event,
+    ) -> None:
+        """A → B → C, where B is ours and C runs on a real Celery worker.
+
+        C receives B's return value as its first argument, which is what
+        makes the chain a chain.
+        """
+
+        @broker.subscriber(our_queue, task="tests.middle")
+        async def middle(args: list[int], kwargs: dict[str, Any]) -> int:
+            event.set()
+            return args[0] * 10
+
+        async with running(broker):
+            await broker.publish(
+                CeleryTask(
+                    "tests.middle",
+                    args=[4],
+                    chain=[signature("tests.echo", options={"queue": queue})],
+                ),
+                queue=our_queue,
+            )
+            await wait_for(event)
+
+        assert wait_for_log(celery_worker) == [
+            {"task": "tests.echo", "payload": 40},
+        ]
+
+    @pytest.mark.asyncio()
+    async def test_a_callback_runs_on_a_celery_worker(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        our_queue: str,
+        celery_worker: Path,
+        event: asyncio.Event,
+    ) -> None:
+        """`link=` on a task we publish fires once our handler succeeds."""
+
+        @broker.subscriber(our_queue, task="tests.middle")
+        async def middle() -> str:
+            event.set()
+            return "done"
+
+        async with running(broker):
+            await broker.publish(
+                CeleryTask(
+                    "tests.middle",
+                    link=[signature("tests.echo", options={"queue": queue})],
+                ),
+                queue=our_queue,
+            )
+            await wait_for(event)
+
+        assert wait_for_log(celery_worker) == [
+            {"task": "tests.echo", "payload": "done"},
+        ]
+
+    @pytest.mark.asyncio()
+    async def test_an_errback_runs_on_a_celery_worker(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        our_queue: str,
+        celery_worker: Path,
+        event: asyncio.Event,
+    ) -> None:
+        """An errback receives the failed task id, as Celery calls it."""
+
+        @broker.subscriber(our_queue, task="tests.middle")
+        async def middle() -> None:
+            event.set()
+            msg = "boom"
+            raise ValueError(msg)
+
+        async with running(broker):
+            await broker.publish(
+                CeleryTask(
+                    "tests.middle",
+                    link_error=[signature("tests.echo", options={"queue": queue})],
+                ),
+                queue=our_queue,
+                correlation_id="failing-task-id",
+            )
+            await wait_for(event)
+
+        assert wait_for_log(celery_worker) == [
+            {"task": "tests.echo", "payload": "failing-task-id"},
+        ]
+
+    @pytest.mark.asyncio()
+    async def test_an_immutable_chain_step_keeps_its_own_arguments(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        our_queue: str,
+        celery_worker: Path,
+        event: asyncio.Event,
+    ) -> None:
+        """`.si()` in Celery: the previous result is not passed on."""
+
+        @broker.subscriber(our_queue, task="tests.middle")
+        async def middle() -> str:
+            event.set()
+            return "ignored"
+
+        async with running(broker):
+            await broker.publish(
+                CeleryTask(
+                    "tests.middle",
+                    chain=[
+                        signature(
+                            "tests.echo",
+                            args=["own"],
+                            options={"queue": queue},
+                            immutable=True,
+                        ),
+                    ],
+                ),
+                queue=our_queue,
+            )
+            await wait_for(event)
+
+        assert wait_for_log(celery_worker) == [
+            {"task": "tests.echo", "payload": "own"},
+        ]
