@@ -2,6 +2,8 @@ import logging
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from typing_extensions import override
+
 from faststream_celery._internal import (
     DefaultLoggerStorage,
     get_broker_logger,
@@ -20,9 +22,11 @@ class CeleryParamsStorage(DefaultLoggerStorage):
 
         self.logger_log_level = logging.INFO
 
+    @override
     def set_level(self, level: int) -> None:
         self.logger_log_level = level
 
+    @override
     def register_subscriber(self, params: dict[str, Any]) -> None:
         self._max_queue_name = max(
             (
@@ -31,6 +35,7 @@ class CeleryParamsStorage(DefaultLoggerStorage):
             ),
         )
 
+    @override
     def get_logger(self, *, context: "ContextRepo") -> "LoggerProto":
         message_id_ln = 10
 

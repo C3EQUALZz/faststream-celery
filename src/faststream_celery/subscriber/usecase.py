@@ -1,10 +1,14 @@
+import logging
 from collections.abc import AsyncIterator, Callable, Iterable, Sequence
+from contextlib import suppress
+from datetime import datetime, timezone
 from functools import partial
 from typing import TYPE_CHECKING, Any, Optional, Union, cast
 
 import anyio
 from faststream.exceptions import IncorrectState
 from faststream.message import StreamMessage
+from faststream.middlewares import AckPolicy
 from typing_extensions import overload, override
 
 from faststream_celery._internal import (
@@ -15,13 +19,20 @@ from faststream_celery._internal import (
     process_msg,
 )
 from faststream_celery.message import ConsumerMessage
-from faststream_celery.parser import CeleryParser
+from faststream_celery.parser import (
+    SERIALIZATION_ACCEPT,
+    CeleryParser,
+    Schedule,
+    extract_schedule,
+    read_headers,
+)
 from faststream_celery.publisher.fake import CeleryFakePublisher
 
-from .bridge import ConsumerBridge
+from .scheduler import EtaScheduler
 
 if TYPE_CHECKING:
     from fast_depends.dependencies import Dependant
+    from faststream.response import Response
 
     from faststream_celery._internal import (
         CallsCollection,
@@ -37,12 +48,22 @@ if TYPE_CHECKING:
     from faststream_celery.message import CeleryMessage
 
     from .config import CelerySubscriberConfig
+    from .consumer import SharedConsumer
 
-SERIALIZATION_ACCEPT = ["json"]
+_NO_SCHEDULE = Schedule(eta=None, expires=None)
 
 
 def _task_filter(task: str, msg: StreamMessage[Any]) -> bool:
     return msg.headers.get("task") == task
+
+
+def _read_schedule(msg: ConsumerMessage) -> Schedule:
+    try:
+        return extract_schedule(read_headers(msg.message))
+    except Exception:  # ruff: ignore[blind-except]
+        # A body we cannot read is not a scheduling problem. Let the regular
+        # pipeline surface the parsing error under the user's ack policy.
+        return _NO_SCHEDULE
 
 
 class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
@@ -63,11 +84,16 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
 
         self.config = config
 
-        self._bridge: ConsumerBridge | None = None
+        self._consumer: SharedConsumer | None = None
+        self._scheduler: EtaScheduler[ConsumerMessage] = EtaScheduler(self.dispatch)
 
     @property
     def queue(self) -> str:
         return f"{self._outer_config.prefix}{self.config.queue}"
+
+    @property
+    def task(self) -> str | None:
+        return self.config.task
 
     @overload
     def __call__(
@@ -127,40 +153,86 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
         await super().start()
         self._post_start()
 
-        bridge = ConsumerBridge(
+        consumer = self._outer_config.consumers.acquire(
+            queue=self.queue,
             connection_factory=self._outer_config.make_connection,
-            queue_name=self.queue,
             accept=SERIALIZATION_ACCEPT,
             prefetch_count=self.config.prefetch_count,
+            logger=self._outer_config.logger,
         )
-        self._bridge = bridge
-        await bridge.start()
+        self._consumer = consumer
 
         if self.calls:
-            self.add_task(self._consume)
+            consumer.register(self)
+
+        await consumer.start()
 
     @override
     async def stop(self) -> None:
         await super().stop()
 
-        if self._bridge is not None:
-            await self._bridge.stop()
-            self._bridge = None
+        # Deferred tasks were never acked, so the broker redelivers them,
+        # as Celery's own eta tasks do on worker shutdown.
+        await self._scheduler.stop()
 
-    async def _consume(self) -> None:
-        bridge = self._bridge
-        if bridge is None:  # pragma: no cover
+        if self._consumer is not None:
+            self._consumer = None
+            await self._outer_config.consumers.release(self.queue, self)
+
+    async def dispatch(self, msg: ConsumerMessage) -> None:
+        """Route a received message: drop, defer, or consume it now."""
+        schedule = _read_schedule(msg)
+        now = datetime.now(timezone.utc)
+
+        if schedule.expires is not None and schedule.expires <= now:
+            await self._drop_expired(msg, schedule.expires)
             return
 
-        while self.running:
-            await self.consume_one(await bridge.get())
+        if schedule.eta is not None:
+            delay = (schedule.eta - now).total_seconds()
+            if delay > 0:
+                self._scheduler.schedule(msg, delay)
+                return
+
+        await self.consume_one(msg)
+
+    async def _drop_expired(self, msg: ConsumerMessage, expires: datetime) -> None:
+        """Discard a task whose ``expires`` has already passed, as Celery does."""
+        self._log(
+            logging.WARNING,
+            f"Dropping expired task (expired at {expires.isoformat()})",
+            extra=self.get_log_context(None),
+        )
+
+        with suppress(Exception):
+            await msg.executor(msg.message.ack)
+
+    @override
+    async def consume(self, msg: ConsumerMessage) -> Optional["Response"]:
+        result: Response | None = await super().consume(msg)
+        await self._settle_unhandled(msg)
+        return result
+
+    async def _settle_unhandled(self, msg: ConsumerMessage) -> None:
+        """Reject a message that never reached a handler.
+
+        FastStream's acknowledgement middleware only settles messages a
+        handler accepted, so one dropped by a `task=` filter would stay
+        unacked — and with a prefetch window that stalls the consumer for
+        good. Celery drops unknown tasks the same way.
+        """
+        if self.ack_policy is AckPolicy.MANUAL or msg.message.acknowledged:
+            return
+
+        with suppress(Exception):
+            await msg.executor(partial(msg.message.reject, requeue=False))
 
     async def consume_one(self, msg: ConsumerMessage) -> None:
         await self.consume(msg)
 
     @override
     async def get_one(self, *, timeout: float = 5.0) -> Optional["CeleryMessage"]:
-        if self._bridge is None:
+        if self._consumer is None:
             msg = "You should start subscriber at first."
             raise IncorrectState(msg)
         if self.calls:
@@ -169,7 +241,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
 
         raw: ConsumerMessage | None = None
         with anyio.move_on_after(timeout):
-            raw = await self._bridge.get()
+            raw = await self._consumer.bridge.get()
 
         if raw is None:
             return None
@@ -181,9 +253,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
             "CeleryMessage",
             await process_msg(
                 msg=raw,
-                middlewares=(
-                    m(raw, context=context) for m in self._broker_middlewares
-                ),
+                middlewares=(m(raw, context=context) for m in self._broker_middlewares),
                 parser=async_parser,
                 decoder=async_decoder,
             ),
@@ -191,7 +261,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
 
     @override
     async def __aiter__(self) -> AsyncIterator["CeleryMessage"]:  # type: ignore[override]
-        if self._bridge is None:
+        if self._consumer is None:
             msg = "You should start subscriber at first."
             raise IncorrectState(msg)
         if self.calls:
@@ -202,7 +272,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
         async_parser, async_decoder = self._get_parser_and_decoder()
 
         while True:
-            raw = await self._bridge.get()
+            raw = await self._consumer.bridge.get()
 
             yield cast(
                 "CeleryMessage",
@@ -216,17 +286,24 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
                 ),
             )
 
+    @override
     def _make_response_publisher(
         self,
         message: "StreamMessage[Any]",
     ) -> Sequence["PublisherProto"]:
+        if message.headers.get("ignore_result"):
+            # The caller told us it will never read the result.
+            return ()
+
         return (
             CeleryFakePublisher(
                 self._outer_config.producer,
                 queue=message.reply_to,
+                task_id=message.headers.get("id") or message.correlation_id,
             ),
         )
 
+    @override
     def get_log_context(
         self,
         message: Optional["StreamMessage[Any]"],

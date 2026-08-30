@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from faststream.middlewares import AckPolicy
+from typing_extensions import override
 
 from faststream_celery._internal import (
     EMPTY,
@@ -28,6 +29,7 @@ class CelerySubscriberConfig(SubscriberUsecaseConfig):
     prefetch_count: int = 1
 
     @property
+    @override
     def ack_policy(self) -> AckPolicy:
         if self._ack_policy is EMPTY:
             if self._outer_config.ack_policy is not EMPTY:

@@ -1,7 +1,9 @@
-from typing import Any
-
 from faststream.exceptions import SetupError
 from faststream.response import PublishCommand, PublishType
+from typing_extensions import override
+
+from faststream_celery.task import CelerySendableMessage
+from faststream_celery.types import MutableHeaders
 
 
 class CeleryPublishCommand(PublishCommand):
@@ -9,7 +11,7 @@ class CeleryPublishCommand(PublishCommand):
 
     def __init__(  # ruff: ignore[too-many-arguments]
         self,
-        message: Any = None,
+        message: CelerySendableMessage = None,
         /,
         *,
         _publish_type: PublishType,
@@ -18,7 +20,7 @@ class CeleryPublishCommand(PublishCommand):
         exchange: str | None = None,
         routing_key: str | None = None,
         declare: bool = True,
-        headers: dict[str, Any] | None = None,
+        headers: MutableHeaders | None = None,
         reply_to: str = "",
         timeout: float | None = 30.0,
     ) -> None:
@@ -41,7 +43,7 @@ class CeleryPublishCommand(PublishCommand):
         self.routing_key = routing_key
         self.declare = declare
 
-        # Request option (reserved for RPC, see ticket-3)
+        # Seconds `broker.request()` waits for the Celery reply.
         self.timeout = timeout
 
     @property
@@ -49,6 +51,7 @@ class CeleryPublishCommand(PublishCommand):
         return self.destination
 
     @classmethod
+    @override
     def from_cmd(
         cls,
         cmd: "PublishCommand",

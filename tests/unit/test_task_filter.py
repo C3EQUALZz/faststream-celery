@@ -1,8 +1,8 @@
 from typing import Any
 
 import pytest
-
 from faststream.message import StreamMessage
+
 from faststream_celery import CeleryBroker
 from faststream_celery.subscriber.usecase import _task_filter
 

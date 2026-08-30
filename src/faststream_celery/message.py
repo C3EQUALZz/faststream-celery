@@ -4,6 +4,7 @@ from typing import Any, NamedTuple, TypeAlias
 
 from faststream.message import StreamMessage
 from kombu import Message
+from typing_extensions import override
 
 # Runs a kombu acknowledgement callable on the consumer thread that owns
 # the message's channel (kombu transports are not thread-safe).
@@ -20,6 +21,15 @@ class ConsumerMessage(NamedTuple):
 
     message: Message
     executor: AckExecutor
+
+
+async def run_inline(action: Callable[[], None]) -> None:  # ruff: ignore[unused-async]
+    """Ack executor for messages with no consumer thread to hop onto.
+
+    Used for RPC replies and by the in-memory test broker, where the
+    kombu object is either short-lived or a stand-in.
+    """
+    action()
 
 
 class CeleryMessage(StreamMessage[Message]):
@@ -52,18 +62,21 @@ class CeleryMessage(StreamMessage[Message]):
         )
         self._ack_executor = ack_executor
 
+    @override
     async def ack(self) -> None:
         """Acknowledge the message (kombu ``basic_ack``)."""
         if self.committed is None:
             await super().ack()
             await self._ack_executor(self.raw_message.ack)
 
+    @override
     async def nack(self) -> None:
         """Reject the message with requeue (Celery task retry semantics)."""
         if self.committed is None:
             await super().nack()
             await self._ack_executor(partial(self.raw_message.reject, requeue=True))
 
+    @override
     async def reject(self) -> None:
         """Reject the message without requeue."""
         if self.committed is None:

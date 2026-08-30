@@ -1,9 +1,9 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from faststream.exceptions import SetupError
 from faststream.response import PublishType
+
 from faststream_celery import CeleryBroker, CeleryRouter, CeleryTask
 from faststream_celery.broker import CeleryRoute
 from faststream_celery.response import CeleryPublishCommand
@@ -150,7 +150,7 @@ async def test_publish_response_goes_to_reply_queue() -> None:
     )
 
     with patch.object(broker.config.producer, "publish", new=AsyncMock()) as publish:
-        await publisher._publish(response_cmd, _extra_middlewares=())  # noqa: SLF001
+        await publisher._publish(response_cmd, _extra_middlewares=())
 
     (cmd,), _ = publish.call_args
     assert cmd.exchange == ""

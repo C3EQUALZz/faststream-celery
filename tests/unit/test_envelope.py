@@ -1,10 +1,10 @@
 import json
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 from faststream.response import PublishType
+
 from faststream_celery.publisher.producer import (
     PERSISTENT_DELIVERY_MODE,
     CeleryFastProducer,
@@ -51,7 +51,10 @@ def test_celery_task_defaults() -> None:
 @pytest.mark.asyncio()
 async def test_producer_publishes_v2_envelope() -> None:
     producer = CeleryFastProducer(parser=None, decoder=None)
-    producer.connect(cast("Connection", MagicMock()))
+    producer.connect(
+        cast("Connection", MagicMock()),
+        connection_factory=MagicMock(),
+    )
 
     with patch.object(producer, "_producer") as kombu_producer:
         await producer.publish(
@@ -88,7 +91,10 @@ async def test_producer_publishes_v2_envelope() -> None:
 @pytest.mark.asyncio()
 async def test_producer_generates_task_id() -> None:
     producer = CeleryFastProducer(parser=None, decoder=None)
-    producer.connect(cast("Connection", MagicMock()))
+    producer.connect(
+        cast("Connection", MagicMock()),
+        connection_factory=MagicMock(),
+    )
 
     with patch.object(producer, "_producer") as kombu_producer:
         await producer.publish(
@@ -107,7 +113,10 @@ async def test_producer_generates_task_id() -> None:
 @pytest.mark.asyncio()
 async def test_producer_publishes_raw_message() -> None:
     producer = CeleryFastProducer(parser=None, decoder=None)
-    producer.connect(cast("Connection", MagicMock()))
+    producer.connect(
+        cast("Connection", MagicMock()),
+        connection_factory=MagicMock(),
+    )
 
     with patch.object(producer, "_producer") as kombu_producer:
         await producer.publish(
@@ -133,7 +142,10 @@ async def test_producer_publishes_raw_message() -> None:
 @pytest.mark.asyncio()
 async def test_producer_reply_publish_uses_default_exchange() -> None:
     producer = CeleryFastProducer(parser=None, decoder=None)
-    producer.connect(cast("Connection", MagicMock()))
+    producer.connect(
+        cast("Connection", MagicMock()),
+        connection_factory=MagicMock(),
+    )
 
     with patch.object(producer, "_producer") as kombu_producer:
         await producer.publish(

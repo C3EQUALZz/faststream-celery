@@ -1,7 +1,7 @@
 import pytest
-
 from faststream.exceptions import SetupError
 from faststream.response import PublishCommand, PublishType
+
 from faststream_celery.response import CeleryPublishCommand
 from faststream_celery.task import CeleryTask
 

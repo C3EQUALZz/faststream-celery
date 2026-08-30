@@ -1,15 +1,16 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import anyio.to_thread
 from faststream.exceptions import IncorrectState
 from kombu import Connection
 
-from faststream_celery._internal import BrokerConfig, DefaultCodec
+from faststream_celery._internal import BrokerConfig, DefaultCodec, resolve_serializer
 from faststream_celery.security import parse_security
+from faststream_celery.subscriber.consumer import ConsumerRegistry
 
 if TYPE_CHECKING:
-
     from faststream.security import BaseSecurity
 
     from faststream_celery.publisher.producer import CeleryFastProducer
@@ -28,6 +29,14 @@ class CeleryBrokerConfig(BrokerConfig):
     max_workers: int = 1
     prefetch_count: int | None = None
 
+    # One kombu consumer per queue, shared by the subscribers on it.
+    consumers: ConsumerRegistry = field(default_factory=ConsumerRegistry)
+
+    @property
+    def virtual_host(self) -> str:
+        """AMQP virtual host from the connection url (``/`` by default)."""
+        return urlparse(self.url).path.lstrip("/") or "/"
+
     def make_connection(self) -> Connection:
         """Build a fresh kombu connection (each consumer thread gets its own)."""
         security_options = parse_security(self.security)
@@ -44,12 +53,23 @@ class CeleryBrokerConfig(BrokerConfig):
         await anyio.to_thread.run_sync(connection.connect)
         self.producer.connect(
             connection,
-            serializer=self.fd_config._serializer,  # ruff: ignore[private-member-access]
+            connection_factory=self.make_connection,
+            serializer=resolve_serializer(self.fd_config),
             codec=self.broker_codec or DefaultCodec(),
         )
 
     async def disconnect(self) -> None:
         await self.producer.disconnect()
+
+    async def is_alive(self, connection: Connection) -> bool:
+        """Whether the connection still reaches the broker."""
+        return await anyio.to_thread.run_sync(_check_connection, connection)
+
+
+def _check_connection(connection: Connection) -> bool:
+    """Runs on a worker thread — kombu connections are not thread-safe."""
+    connection.ensure_connection(max_retries=0)
+    return bool(connection.connected)
 
 
 @dataclass(kw_only=True)

@@ -58,6 +58,7 @@ class ConsumerBridge:
 
         self._stop_event = threading.Event()
         self._started = threading.Event()
+        self._prefetch_changed = threading.Event()
         self._error: BaseException | None = None
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -98,6 +99,12 @@ class ConsumerBridge:
             except queue.Empty:
                 break
             _resolve_future_error(future, IncorrectState("Consumer is stopped."))
+
+    def raise_prefetch(self, count: int) -> None:
+        """Widen the QoS window; the consumer thread applies it."""
+        if count > self._prefetch_count:
+            self._prefetch_count = count
+            self._prefetch_changed.set()
 
     async def get(self) -> ConsumerMessage:
         """Take the next message received by the consumer thread."""
@@ -160,10 +167,16 @@ class ConsumerBridge:
 
         while not self._stop_event.is_set():
             self._run_actions()
+            self._apply_prefetch(consumer)
             try:
                 connection.drain_events(timeout=self._drain_timeout)
             except TimeoutError:
                 continue
+
+    def _apply_prefetch(self, consumer: Consumer) -> None:
+        if self._prefetch_changed.is_set():
+            self._prefetch_changed.clear()
+            consumer.qos(prefetch_count=self._prefetch_count)
 
     def _run_actions(self) -> None:
         loop = self._loop

@@ -7,15 +7,15 @@ from typing_extensions import override
 
 from faststream_celery._internal import PublisherUsecase
 from faststream_celery.response import CeleryPublishCommand
+from faststream_celery.task import CelerySendableMessage
+from faststream_celery.types import MutableHeaders
 
 if TYPE_CHECKING:
     from faststream_celery._internal import (
         PublisherMiddleware,
         PublisherSpecification,
-        SendableMessage,
     )
     from faststream_celery.message import CeleryMessage
-    from faststream_celery.task import CeleryTask
 
     from .config import CeleryPublisherConfig
 
@@ -32,21 +32,24 @@ class CeleryPublisher(PublisherUsecase):
 
         self.config = config
 
-        self.queue = config.queue
         self.exchange = config.exchange
         self.routing_key = config.routing_key
         self.headers = config.headers or {}
         self.reply_to = config.reply_to
 
+    @property
+    def queue(self) -> str:
+        return f"{self._outer_config.prefix}{self.config.queue}"
+
     @override
     async def publish(
         self,
-        message: Union["SendableMessage", "CeleryTask"] = None,
+        message: CelerySendableMessage = None,
         queue: str | None = None,
         *,
         exchange: str | None = None,
         routing_key: str | None = None,
-        headers: dict[str, Any] | None = None,
+        headers: MutableHeaders | None = None,
         correlation_id: str | None = None,
         reply_to: str = "",
     ) -> None:
@@ -89,11 +92,11 @@ class CeleryPublisher(PublisherUsecase):
     @override
     async def request(
         self,
-        message: Union["SendableMessage", "CeleryTask"] = None,
+        message: CelerySendableMessage = None,
         queue: str | None = None,
         *,
         correlation_id: str | None = None,
-        headers: dict[str, Any] | None = None,
+        headers: MutableHeaders | None = None,
         timeout: float | None = 30.0,
     ) -> "CeleryMessage":
         msg = "CeleryBroker doesn't support RPC requests yet."

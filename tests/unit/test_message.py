@@ -2,8 +2,8 @@ from collections.abc import Callable
 from unittest.mock import MagicMock
 
 import pytest
-
 from faststream.message import AckStatus
+
 from faststream_celery.message import CeleryMessage
 
 

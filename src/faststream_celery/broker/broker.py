@@ -1,12 +1,11 @@
 import logging
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, Optional
+from functools import partial
+from typing import TYPE_CHECKING, Any, Optional, cast
 from urllib.parse import urlparse
 
 import anyio
-import anyio.to_thread
 from fast_depends import dependency_provider
-from faststream.exceptions import FeatureNotSupportedException
 from faststream.message import gen_cor_id
 from faststream.middlewares import AckPolicy
 from faststream.response import PublishType
@@ -25,11 +24,16 @@ from faststream_celery._internal import (
 )
 from faststream_celery.configs import CeleryBrokerConfig
 from faststream_celery.message import ConsumerMessage
+from faststream_celery.middlewares import CeleryResultMiddleware
 from faststream_celery.publisher.producer import CeleryFastProducer
 from faststream_celery.response import CeleryPublishCommand
+from faststream_celery.task import CelerySendableMessage
+from faststream_celery.types import MutableHeaders
 
 from .logging import make_celery_logger_state
 from .registrator import CeleryRegistrator
+
+DEFAULT_PING_TIMEOUT = 3.0
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -46,15 +50,13 @@ if TYPE_CHECKING:
         CodecProto,
         CustomCallable,
         IdGenerator,
-        SendableMessage,
     )
     from faststream_celery.message import CeleryMessage
-    from faststream_celery.task import CeleryTask
 
 
 class CeleryBroker(
     CeleryRegistrator,
-    BrokerUsecase[ConsumerMessage, Connection, CeleryBrokerConfig],
+    BrokerUsecase[ConsumerMessage, Connection],
 ):
     """A FastStream broker wire-compatible with Celery (over kombu)."""
 
@@ -123,36 +125,44 @@ class CeleryBroker(
             id_generator=id_generator,
         )
 
+        config = CeleryBrokerConfig(
+            producer=producer,
+            url=url,
+            transport_options=transport_options,
+            ssl=ssl,
+            security=security,
+            max_workers=max_workers,
+            prefetch_count=prefetch_count,
+            broker_middlewares=middlewares,
+            broker_parser=parser,
+            broker_decoder=decoder,
+            broker_codec=codec,
+            logger=make_celery_logger_state(
+                logger=None if logger is EMPTY else logger,
+                log_level=log_level,
+            ),
+            fd_config=FastDependsConfig(
+                use_fastdepends=apply_types,
+                serializer=serializer or EMPTY,
+                provider=provider or dependency_provider,
+                context=context or ContextRepo(),
+            ),
+            broker_dependencies=dependencies,
+            graceful_timeout=graceful_timeout,
+            ack_policy=ack_policy,
+            id_generator=id_generator,
+            extra_context={"broker": self},
+        )
+        config.insert_middleware(
+            cast(
+                "BrokerMiddleware[ConsumerMessage]",
+                partial(CeleryResultMiddleware, config=config),
+            ),
+        )
+
         super().__init__(
             routers=routers,
-            config=CeleryBrokerConfig(
-                producer=producer,
-                url=url,
-                transport_options=transport_options,
-                ssl=ssl,
-                security=security,
-                max_workers=max_workers,
-                prefetch_count=prefetch_count,
-                broker_middlewares=middlewares,
-                broker_parser=parser,
-                broker_decoder=decoder,
-                broker_codec=codec,
-                logger=make_celery_logger_state(
-                    logger=None if logger is EMPTY else logger,
-                    log_level=log_level,
-                ),
-                fd_config=FastDependsConfig(
-                    use_fastdepends=apply_types,
-                    serializer=serializer or EMPTY,
-                    provider=provider or dependency_provider,
-                    context=context or ContextRepo(),
-                ),
-                broker_dependencies=dependencies,
-                graceful_timeout=graceful_timeout,
-                ack_policy=ack_policy,
-                id_generator=id_generator,
-                extra_context={"broker": self},
-            ),
+            config=config,
             specification=BrokerSpec(
                 description=description,
                 url=[url],
@@ -188,12 +198,12 @@ class CeleryBroker(
     @override
     async def publish(
         self,
-        message: "SendableMessage | CeleryTask" = None,
+        message: CelerySendableMessage = None,
         queue: str = "",
         *,
         exchange: str | None = None,
         routing_key: str | None = None,
-        headers: dict[str, Any] | None = None,
+        headers: MutableHeaders | None = None,
         correlation_id: str | None = None,
         reply_to: str = "",
     ) -> None:
@@ -230,15 +240,51 @@ class CeleryBroker(
     @override
     async def request(  # type: ignore[override]
         self,
-        message: "SendableMessage | CeleryTask",
+        message: CelerySendableMessage,
         queue: str = "",
         *,
+        exchange: str | None = None,
+        routing_key: str | None = None,
         correlation_id: str | None = None,
-        headers: dict[str, Any] | None = None,
+        headers: MutableHeaders | None = None,
         timeout: float | None = 30.0,
     ) -> "CeleryMessage":
-        msg = "CeleryBroker doesn't support RPC requests yet."
-        raise FeatureNotSupportedException(msg)
+        """Publish a Celery task and wait for its result (AMQP RPC).
+
+        The task is published with a `reply_to` pointing at a temporary
+        exclusive queue; the Celery result envelope that a worker publishes
+        there is decoded and returned.
+
+        Args:
+            message: Message body to send, usually a `CeleryTask`.
+            queue: Celery queue name to publish to.
+            exchange: Exchange name to publish to (the queue name by default).
+            routing_key: Routing key to publish with (the queue name by default).
+            correlation_id: Manual message correlation_id setter (used as the
+                Celery task id for `CeleryTask` messages).
+            headers: Message headers to store meta-information.
+            timeout: Seconds to wait for the reply before raising `TimeoutError`.
+
+        Returns:
+            CeleryMessage: The reply message; `await msg.decode()` gives the
+                Celery result envelope.
+        """
+        cmd = CeleryPublishCommand(
+            message,
+            queue=queue,
+            exchange=exchange,
+            routing_key=routing_key,
+            headers=headers,
+            correlation_id=correlation_id or self.config.id_generator(),
+            timeout=timeout,
+            _publish_type=PublishType.REQUEST,
+        )
+
+        msg: CeleryMessage = await super()._basic_request(
+            cmd,
+            producer=self.config.producer,
+        )
+        return msg
 
     @override
     async def ping(self, timeout: float | None = 3) -> bool:
@@ -247,13 +293,8 @@ class CeleryBroker(
             return False
 
         try:
-            with anyio.fail_after(timeout or 3.0):
-                return await anyio.to_thread.run_sync(_ping_connection, connection)
+            with anyio.fail_after(timeout or DEFAULT_PING_TIMEOUT):
+                return await self.config.broker_config.is_alive(connection)
 
         except (OSError, kombu_exceptions.OperationalError, TimeoutError):
             return False
-
-
-def _ping_connection(connection: Connection) -> bool:
-    connection.ensure_connection(max_retries=0)
-    return bool(connection.connected)
