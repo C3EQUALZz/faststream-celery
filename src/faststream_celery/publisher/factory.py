@@ -37,6 +37,7 @@ def create_publisher(  # ruff: ignore[too-many-arguments]
             queue=queue,
             exchange=exchange,
             routing_key=routing_key,
+            reply_to=reply_to,
             title_=title_,
             description_=description_,
             schema_=schema_,

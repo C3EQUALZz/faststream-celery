@@ -212,18 +212,12 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
 def jsonable_body(body: TaskBody) -> TaskBody:
     """Reduce a task body to the types kombu's JSON serializer accepts.
 
-    Task arguments are not always plain JSON: a caller may pass a Pydantic
-    model or a datetime, and a canvas step is called with whatever the
-    previous handler returned. kombu's ``json`` serializer takes none of
-    those, so the body goes through the FastStream encoder first and comes
-    back as plain types — the alternative is an ``EncodeError`` at publish
-    time, with the task already run and its continuation lost.
-
-    Encoding twice is the cost of keeping the wire format exactly as Celery
-    writes it (``application/json``, ``utf-8``), which a stricter serializer
-    hand-off would change.
+    A task argument may be a Pydantic model or a datetime — a canvas step is
+    called with whatever the previous handler returned — and kombu's ``json``
+    serializer takes neither, raising ``EncodeError`` with the task already
+    run. Encoding through FastStream first costs a second pass and keeps the
+    wire format Celery's own.
     """
-    # JSON has no tuples, and a body is the `(args, kwargs, embed)` triple.
     args, kwargs, embed = json.loads(dump_json(body))
 
     return args, kwargs, embed

@@ -25,14 +25,9 @@ if TYPE_CHECKING:
 
 _PendingAction = tuple[Callable[[], None], "asyncio.Future[None]"]
 
-# How long the thread blocks on the socket while a delivery is still
-# unsettled.
-#
-# An acknowledgement queued by the event loop runs only once the thread comes
-# back from `drain_events`, and a blocking read is woken by an incoming frame —
-# which, with the QoS window full, is the very message the acknowledgement
-# would have made room for. Idling at `drain_timeout` there would cap a
-# `prefetch_count=1` subscriber at one message per `drain_timeout`.
+# Blocking read while a delivery is unsettled: a queued ack runs only once
+# `drain_events` returns, and with the QoS window full nothing arrives to end
+# it early.
 SETTLE_DRAIN_TIMEOUT: Final[float] = 0.01
 
 
@@ -73,8 +68,7 @@ class ConsumerBridge:
         self._error: BaseException | None = None
         self._consuming = False
 
-        # Deliveries handed to the event loop and not settled yet. Touched by
-        # the consumer thread only.
+        # Deliveries not settled yet; the consumer thread owns this.
         self._unsettled = 0
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None

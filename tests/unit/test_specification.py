@@ -5,10 +5,11 @@ import pytest
 from faststream.specification import AsyncAPI
 
 from faststream_celery import CeleryBroker, CeleryRouter
+from faststream_celery.schemas.constants import PERSISTENT_DELIVERY_MODE
 from faststream_celery.schemas.topology import build_topology
 
 
-def _schema(broker: CeleryBroker) -> dict[str, Any]:
+def schema(broker: CeleryBroker) -> dict[str, Any]:
     spec = AsyncAPI(broker, schema_version="3.0.0").to_specification()
     jsonable: dict[str, Any] = spec.to_jsonable()
     return jsonable
@@ -48,10 +49,10 @@ def test_schema_is_generated_and_json_serializable() -> None:
 
     broker.publisher("results")
 
-    schema = _schema(broker)
+    sch = schema(broker)
 
-    assert json.loads(json.dumps(schema)) == schema
-    assert schema["asyncapi"] == "3.0.0"
+    assert json.loads(json.dumps(schema)) == sch
+    assert sch["asyncapi"] == "3.0.0"
 
 
 def test_subscriber_channel_carries_the_queue_binding() -> None:
@@ -60,7 +61,7 @@ def test_subscriber_channel_carries_the_queue_binding() -> None:
     @broker.subscriber("celery", task="proj.tasks.add")
     async def handler() -> None: ...
 
-    channels = _schema(broker)["channels"]
+    channels = schema(broker)["channels"]
 
     assert "celery:Handler" in channels
     binding = channels["celery:Handler"]["bindings"]["amqp"]
@@ -75,7 +76,7 @@ def test_subscriber_operation_carries_the_routing_key() -> None:
     @broker.subscriber("celery", task="proj.tasks.add")
     async def handler() -> None: ...
 
-    operations = _schema(broker)["operations"]
+    operations = schema(broker)["operations"]
 
     (operation,) = operations.values()
     assert operation["action"] == "receive"
@@ -86,7 +87,7 @@ def test_publisher_channel_carries_the_exchange_binding() -> None:
     broker = CeleryBroker()
     broker.publisher("results")
 
-    channels = _schema(broker)["channels"]
+    channels = schema(broker)["channels"]
 
     assert "results:results:Publisher" in channels
     binding = channels["results:results:Publisher"]["bindings"]["amqp"]
@@ -94,11 +95,41 @@ def test_publisher_channel_carries_the_exchange_binding() -> None:
     assert binding["exchange"]["type"] == "direct"
 
 
+def test_publisher_operation_documents_the_reply_queue() -> None:
+    """`reply_to=` is where this publisher asks for answers, so it is schema."""
+    broker = CeleryBroker()
+    broker.publisher("results", reply_to="answers")
+
+    operation = schema(broker)["operations"]["results:results:Publisher"]
+    binding = operation["bindings"]["amqp"]
+
+    assert binding["replyTo"] == "answers"
+
+
+def test_a_publisher_without_a_reply_queue_documents_none() -> None:
+    broker = CeleryBroker()
+    broker.publisher("results")
+
+    operation = schema(broker)["operations"]["results:results:Publisher"]
+
+    assert "replyTo" not in operation["bindings"]["amqp"]
+
+
+def test_publisher_operation_documents_persistence() -> None:
+    """Every publish is persistent, so the schema says so."""
+    broker = CeleryBroker()
+    broker.publisher("results")
+
+    operation = schema(broker)["operations"]["results:results:Publisher"]
+
+    assert operation["bindings"]["amqp"]["deliveryMode"] == PERSISTENT_DELIVERY_MODE
+
+
 def test_publisher_channel_name_uses_a_custom_exchange() -> None:
     broker = CeleryBroker()
     broker.publisher("results", exchange="tasks", routing_key="high")
 
-    channels = _schema(broker)["channels"]
+    channels = schema(broker)["channels"]
 
     assert "results:tasks:Publisher" in channels
 
@@ -114,7 +145,7 @@ def test_router_prefix_reaches_the_schema() -> None:
     broker = CeleryBroker()
     broker.include_router(router)
 
-    channels = _schema(broker)["channels"]
+    channels = schema(broker)["channels"]
 
     assert "pre-celery:Handler" in channels
     assert "pre-results:pre-results:Publisher" in channels
@@ -128,7 +159,7 @@ def test_custom_titles_win() -> None:
 
     broker.publisher("results", title="Results")
 
-    channels = _schema(broker)["channels"]
+    channels = schema(broker)["channels"]
 
     assert "AddTask" in channels
     assert "Results" in channels

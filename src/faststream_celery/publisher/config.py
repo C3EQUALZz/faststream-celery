@@ -15,6 +15,7 @@ class CeleryPublisherSpecificationConfig(PublisherSpecificationConfig):
     queue: str
     exchange: str | None = None
     routing_key: str | None = None
+    reply_to: str = ""
 
 
 @dataclass(kw_only=True)
