@@ -77,10 +77,14 @@ persistence (Celery works the same way).
 
 ### 8. Canvas — full support
 
-Chain, callbacks/errbacks (publishing the next signatures from `embed`),
-**chord** (with group counters in the result backend, `chord_unlock`
-mechanics). Chord is the heaviest item in scope and a candidate for its own
-stage.
+Chain, callbacks/errbacks (publishing the next signatures from `embed`). A
+step's `options` travel with it: `queue`, the frozen `task_id`, and `reply_to` —
+without the last one, the client waiting on a chain never sees the final
+result.
+
+Also in scope: **chord** (with group counters in the result backend,
+`chord_unlock` mechanics). Chord is the heaviest item in scope and a candidate
+for its own stage.
 
 ### 9. Publishing
 
