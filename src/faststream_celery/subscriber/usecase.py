@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from contextlib import suppress
 from datetime import datetime, timezone
 from functools import partial
-from typing import TYPE_CHECKING, Any, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Final, Optional, Union, cast
 
 import anyio
 from faststream.exceptions import IncorrectState
@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from .consumer import SharedConsumer
 
 
-_NO_SCHEDULE = Schedule(eta=None, expires=None)
+_NO_SCHEDULE: Final[Schedule] = Schedule(eta=None, expires=None)
 
 
 def _task_filter(task: str, msg: StreamMessage[Any]) -> bool:

@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 from faststream.message import decode_message
 
@@ -15,9 +15,14 @@ if TYPE_CHECKING:
 
 
 # `(args, kwargs, embed)`.
-_V2_BODY_SLOTS = 3
+_V2_BODY_SLOTS: Final[int] = 3
 
-_NO_CANVAS = TaskEmbed(callbacks=None, errbacks=None, chain=None, chord=None)
+_NO_CANVAS: Final[TaskEmbed] = TaskEmbed(
+    callbacks=None,
+    errbacks=None,
+    chain=None,
+    chord=None,
+)
 
 
 class Schedule(NamedTuple):

@@ -27,7 +27,7 @@ examples.resize_image -> {'upload_id': 'upload-7', 'size': [800, 600], 'task_id'
 examples.send_email -> queued, not waiting
 examples.add in 3.0s -> 15
 examples.fail -> FAILURE: RuntimeError: nope
-examples.send_email(user_id=-1) -> FAILURE: ValidationError: ...
+examples.send_email(user_id=-1) -> FAILURE: Exception: <class 'pydantic_core._pydantic_core.ValidationError'>([])
 examples.not_implemented -> queued, watch the consumer's warning
 ```
 
@@ -47,6 +47,10 @@ Single scenarios: `python celery_client.py bad`, `... fail`, `... unknown`.
   (`backend="rpc://"`) or to a result backend.
 * An unhandled exception becomes a `FAILURE` envelope with a traceback, so
   `AsyncResult.get()` re-raises it and `AsyncResult.status` reads `FAILURE`.
+  Celery rebuilds the exception from `exc_type` / `exc_module` / `exc_message`;
+  one it cannot reconstruct — a `ValidationError` takes constructor arguments
+  Celery does not have — comes back as a plain `Exception` carrying the type
+  name. The status and the traceback are exact either way.
 * `countdown` / `eta` / `expires` from the client are honoured: the task is
   held until due, and dropped once expired.
 * A task no subscriber claims is rejected, the way a Celery worker rejects an

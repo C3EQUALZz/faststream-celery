@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from faststream.opentelemetry import TelemetrySettingsProvider
 
@@ -23,10 +23,10 @@ if TYPE_CHECKING:
 
 # Celery routes by task name inside a queue, so the task is the dimension
 # that tells two spans on the same queue apart.
-CELERY_TASK_NAME = "messaging.celery.task_name"
-CELERY_TASK_ID = "messaging.celery.task_id"
+CELERY_TASK_NAME: Final[str] = "messaging.celery.task_name"
+CELERY_TASK_ID: Final[str] = "messaging.celery.task_id"
 
-DEFAULT_EXCHANGE_LABEL = "default"
+DEFAULT_EXCHANGE_LABEL: Final[str] = "default"
 
 
 class CeleryTelemetrySettingsProvider(

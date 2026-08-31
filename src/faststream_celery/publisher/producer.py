@@ -1,7 +1,8 @@
+import json
 from collections.abc import Callable
 from functools import partial
 from time import monotonic
-from typing import TYPE_CHECKING, NamedTuple, Optional, cast
+from typing import TYPE_CHECKING, Final, NamedTuple, Optional, cast
 
 import anyio
 import anyio.to_thread
@@ -16,6 +17,7 @@ from faststream_celery._internal import (
     IdGenerator,
     ParserComposition,
     ProducerProto,
+    dump_json,
 )
 from faststream_celery.message import ConsumerMessage, run_inline
 from faststream_celery.parser import CeleryParser
@@ -34,7 +36,7 @@ if TYPE_CHECKING:
 
     from faststream_celery._internal import CustomCallable
 
-DEFAULT_REQUEST_TIMEOUT = 30.0
+DEFAULT_REQUEST_TIMEOUT: Final[float] = 30.0
 
 ConnectionFactory = Callable[[], Connection]
 
@@ -186,7 +188,7 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
         headers.update(cmd.headers or {})
 
         return Payload(
-            body=envelope.body,
+            body=jsonable_body(envelope.body),
             serializer=SERIALIZER,
             content_type=None,
             headers=headers,
@@ -205,6 +207,26 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
             correlation_id=cmd.correlation_id,
             delivery_mode=None,
         )
+
+
+def jsonable_body(body: TaskBody) -> TaskBody:
+    """Reduce a task body to the types kombu's JSON serializer accepts.
+
+    Task arguments are not always plain JSON: a caller may pass a Pydantic
+    model or a datetime, and a canvas step is called with whatever the
+    previous handler returned. kombu's ``json`` serializer takes none of
+    those, so the body goes through the FastStream encoder first and comes
+    back as plain types — the alternative is an ``EncodeError`` at publish
+    time, with the task already run and its continuation lost.
+
+    Encoding twice is the cost of keeping the wire format exactly as Celery
+    writes it (``application/json``, ``utf-8``), which a stricter serializer
+    hand-off would change.
+    """
+    # JSON has no tuples, and a body is the `(args, kwargs, embed)` triple.
+    args, kwargs, embed = json.loads(dump_json(body))
+
+    return args, kwargs, embed
 
 
 def _destination_of(cmd: CeleryPublishCommand) -> Destination:

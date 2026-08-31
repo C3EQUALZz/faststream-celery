@@ -6,6 +6,7 @@ the sync-to-async boundary is exercised for real without a broker to run.
 
 import asyncio
 import json
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -13,7 +14,10 @@ import pytest
 from faststream.exceptions import IncorrectState
 from kombu import Connection, Exchange, Producer, Queue
 
-from faststream_celery.subscriber.bridge import ConsumerBridge
+from faststream_celery.subscriber.bridge import (
+    SETTLE_DRAIN_TIMEOUT,
+    ConsumerBridge,
+)
 from tests.helpers import MEMORY_URL
 
 DRAIN_TIMEOUT = 0.05
@@ -163,6 +167,77 @@ class TestMessageFlow:
         # Acking twice is a kombu MessageStateError, raised on the thread.
         with pytest.raises(Exception, match="already acknowledged"):
             await msg.executor(msg.message.ack)
+
+        await bridge.stop()
+
+
+class TestSettleLatency:
+    """An unsettled delivery shortens the blocking read.
+
+    An acknowledgement queued by the event loop runs when the thread comes back
+    from `drain_events`, and with the QoS window full no frame will arrive to
+    wake it. Idling at `drain_timeout` there would cap a `prefetch_count=1`
+    subscriber at one message per `drain_timeout`.
+    """
+
+    def test_an_idle_thread_blocks_for_the_drain_timeout(
+        self,
+        bridge: ConsumerBridge,
+    ) -> None:
+        assert bridge._next_timeout() == DRAIN_TIMEOUT
+
+    @pytest.mark.asyncio()
+    async def test_an_unsettled_delivery_shortens_the_wait(
+        self,
+        bridge: ConsumerBridge,
+        queue: str,
+    ) -> None:
+        await bridge.start()
+
+        publish(queue, [[], {}, {}], headers={"task": "t", "id": "1"})
+        msg = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
+
+        assert bridge._next_timeout() == min(DRAIN_TIMEOUT, SETTLE_DRAIN_TIMEOUT)
+
+        await msg.executor(msg.message.ack)
+
+        assert bridge._next_timeout() == DRAIN_TIMEOUT
+
+        await bridge.stop()
+
+    @pytest.mark.asyncio()
+    async def test_messages_are_not_paced_by_the_drain_timeout(
+        self,
+        queue: str,
+    ) -> None:
+        """Five messages through a one-slot QoS window, faster than five drains.
+
+        With the ack waiting for a full `drain_timeout`, this took at least
+        `total * drain_timeout` seconds.
+        """
+        total = 5
+        slow_drain = 1.0
+
+        bridge = ConsumerBridge(
+            connection_factory=connection_factory(),
+            queue_name=queue,
+            accept=["json"],
+            prefetch_count=1,
+            drain_timeout=slow_drain,
+        )
+
+        await bridge.start()
+
+        for index in range(total):
+            publish(queue, [[index], {}, {}], headers={"task": "t", "id": str(index)})
+
+        started = time.monotonic()
+        for _ in range(total):
+            msg = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
+            await msg.executor(msg.message.ack)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < total * slow_drain
 
         await bridge.stop()
 

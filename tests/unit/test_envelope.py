@@ -1,17 +1,32 @@
 import json
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 from faststream.response import PublishType
+from pydantic import BaseModel
 
-from faststream_celery.publisher.producer import CeleryFastProducer
+from faststream_celery.publisher.producer import CeleryFastProducer, jsonable_body
 from faststream_celery.response import CeleryPublishCommand
 from faststream_celery.schemas.constants import PERSISTENT_DELIVERY_MODE
 from faststream_celery.schemas.task import CeleryTask, build_task_envelope
+from faststream_celery.types import TaskEmbed
 
 if TYPE_CHECKING:
     from kombu import Connection
+
+    from faststream_celery.types import TaskBody
+
+_MOMENT = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+_EMPTY_EMBED = TaskEmbed(callbacks=None, errbacks=None, chain=None, chord=None)
+
+
+class _Report(BaseModel):
+    """A task argument that is not JSON by itself."""
+
+    rows: int
 
 
 def test_build_task_envelope() -> None:
@@ -160,3 +175,51 @@ async def test_producer_reply_publish_uses_default_exchange() -> None:
     assert kwargs["exchange"].name == ""
     assert kwargs["routing_key"] == "reply-queue"
     assert kwargs["declare"] is None
+
+
+class TestBodyIsReducedToJson:
+    """kombu's `json` serializer only takes plain types.
+
+    A task argument may be anything FastStream can serialize — and a canvas
+    step is called with whatever the previous handler returned, which is often
+    a Pydantic model. Handing that to kombu raises `EncodeError` at publish
+    time, with the task already run and its continuation lost.
+    """
+
+    def test_a_model_becomes_a_dict(self) -> None:
+        args, kwargs, _ = jsonable_body(
+            ([_Report(rows=3)], {"at": _MOMENT}, _EMPTY_EMBED),
+        )
+
+        assert args == [{"rows": 3}]
+        assert kwargs == {"at": "2026-01-01T00:00:00Z"}
+
+    def test_plain_types_survive_unchanged(self) -> None:
+        body: TaskBody = ([1, "two"], {"three": True}, _EMPTY_EMBED)
+
+        assert jsonable_body(body) == body
+
+    @pytest.mark.asyncio()
+    async def test_a_model_argument_reaches_the_wire(self) -> None:
+        producer = CeleryFastProducer(parser=None, decoder=None)
+        producer.connect(
+            cast("Connection", MagicMock()),
+            connection_factory=MagicMock(),
+        )
+
+        with patch.object(producer, "_producer") as kombu_producer:
+            await producer.publish(
+                CeleryPublishCommand(
+                    CeleryTask("proj.tasks.notify", args=[_Report(rows=3)]),
+                    queue="celery",
+                    correlation_id="task-id-1",
+                    _publish_type=PublishType.PUBLISH,
+                ),
+            )
+
+        (body, *_), kwargs = kombu_producer.publish.call_args
+
+        assert body[0] == [{"rows": 3}]
+        # Unchanged from what Celery writes: the serializer still does the
+        # encoding, so content type and encoding are its own.
+        assert kwargs["serializer"] == "json"

@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Callable, Iterable, Sequence
-from typing import TYPE_CHECKING, Any, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Final, Optional, Union, cast
 
 from fastapi.datastructures import Default
 from fastapi.routing import APIRoute
@@ -17,9 +17,9 @@ from faststream_celery.message import ConsumerMessage
 from faststream_celery.types import MutableHeaders
 
 # FastAPI sentinels, built once instead of on every call.
-NO_RESPONSE_MODEL = Default(None)
-DEFAULT_RESPONSE_CLASS = Default(JSONResponse)
-DEFAULT_UNIQUE_ID_FUNCTION = Default(generate_unique_id)
+NO_RESPONSE_MODEL: Final[Any] = Default(None)
+DEFAULT_RESPONSE_CLASS: Final[Any] = Default(JSONResponse)
+DEFAULT_UNIQUE_ID_FUNCTION: Final[Any] = Default(generate_unique_id)
 
 if TYPE_CHECKING:
     from enum import Enum

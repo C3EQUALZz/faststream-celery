@@ -12,7 +12,7 @@ import queue
 import threading
 from collections.abc import Callable
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from faststream.exceptions import IncorrectState
 from kombu import Connection, Consumer, Exchange, Queue
@@ -33,7 +33,7 @@ _PendingAction = tuple[Callable[[], None], "asyncio.Future[None]"]
 # which, with the QoS window full, is the very message the acknowledgement
 # would have made room for. Idling at `drain_timeout` there would cap a
 # `prefetch_count=1` subscriber at one message per `drain_timeout`.
-SETTLE_DRAIN_TIMEOUT = 0.01
+SETTLE_DRAIN_TIMEOUT: Final[float] = 0.01
 
 
 def _resolve_future(future: "asyncio.Future[None]") -> None:

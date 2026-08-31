@@ -39,15 +39,24 @@ python celery_client.py
 form 1: examples.send_email -> {'status': 'sent', 'user_id': 42}
 form 2: examples.transfer -> {'from': 1, 'to': 2, 'amount_cents': 4999}
 form 3: examples.resize_image -> {'upload_id': 'upload-7', 'size': [800, 600]}
-unknown keyword: examples.send_email -> FAILURE: ValidationError: 1 validation error for send_email
-negative id: examples.send_email -> FAILURE: ValidationError: 1 validation error for send_email
-unexpected args: examples.send_email -> FAILURE: ValidationError: 1 validation error for send_email
-same account: examples.transfer -> FAILURE: ValidationError: 1 validation error for transfer
-oversized: examples.resize_image -> FAILURE: ValidationError: 1 validation error for resize_image
+unknown keyword: examples.send_email -> FAILURE: Exception: <class 'pydantic_core._pydantic_core.ValidationError'>([])
+negative id: examples.send_email -> FAILURE: Exception: <class 'pydantic_core._pydantic_core.ValidationError'>([])
+unexpected args: examples.send_email -> FAILURE: Exception: <class 'pydantic_core._pydantic_core.ValidationError'>([])
+same account: examples.transfer -> FAILURE: Exception: <class 'pydantic_core._pydantic_core.ValidationError'>([])
+oversized: examples.resize_image -> FAILURE: Exception: <class 'pydantic_core._pydantic_core.ValidationError'>([])
 ```
 
 Every rejection happens before the handler body runs, and reaches the caller as
-a Celery `FAILURE` with the Pydantic error in the traceback.
+a Celery `FAILURE` with the Pydantic error in the traceback. Celery cannot
+reconstruct a `ValidationError` on the client side (it takes constructor
+arguments Celery has no way to supply), so `get()` raises a plain `Exception`
+naming the type — the consumer's log has the full message:
+
+```
+ValidationError: 1 validation error for send_email
+kwargs.user_id
+  Input should be greater than 0 [type=greater_than, input_value=-1, ...]
+```
 
 ## Sharing the schema
 

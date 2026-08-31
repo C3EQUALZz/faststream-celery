@@ -6,7 +6,7 @@ produced them (``celery.backends.redis.RedisBackend``).
 """
 
 import json
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import anyio
 from faststream.exceptions import IncorrectState
@@ -27,12 +27,12 @@ if TYPE_CHECKING:
     from faststream_celery.schemas.result import TaskResult
 
 # `celery.backends.base.Backend.task_keyprefix`.
-KEY_PREFIX = "celery-task-meta-"
+KEY_PREFIX: Final[str] = "celery-task-meta-"
 
 # `result_expires`, one day.
-DEFAULT_EXPIRES = 86400
+DEFAULT_EXPIRES: Final[int] = 86400
 
-DEFAULT_POLL_INTERVAL = 0.05
+DEFAULT_POLL_INTERVAL: Final[float] = 0.05
 
 
 class RedisResultBackend:

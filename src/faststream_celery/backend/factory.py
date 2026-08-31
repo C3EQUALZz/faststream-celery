@@ -1,11 +1,12 @@
+from typing import Final
 from urllib.parse import urlparse
 
 from .proto import ResultBackend
 
 # `rpc://` is Celery's name for "the result comes back over the broker",
 # which is what `broker.request()` already does without a backend.
-RPC_SCHEMES = frozenset({"rpc"})
-REDIS_SCHEMES = frozenset({"redis", "rediss", "unix"})
+RPC_SCHEMES: Final[frozenset[str]] = frozenset({"rpc"})
+REDIS_SCHEMES: Final[frozenset[str]] = frozenset({"redis", "rediss", "unix"})
 
 
 def make_result_backend(url: str | None) -> ResultBackend | None:

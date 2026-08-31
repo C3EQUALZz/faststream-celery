@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -5,7 +6,9 @@ from faststream.exceptions import SetupError
 from faststream.response import PublishType
 
 from faststream_celery import CeleryBroker, CeleryRouter, CeleryTask
+from faststream_celery._internal import ContextRepo
 from faststream_celery.broker import CeleryRoute
+from faststream_celery.broker.logging import CeleryParamsStorage
 from faststream_celery.response import CeleryPublishCommand
 from faststream_celery.subscriber import CelerySubscriber
 
@@ -29,6 +32,34 @@ def test_broker_constructs_with_url_and_options() -> None:
     assert broker.config.transport_options == {"visibility_timeout": 3600}
     assert broker.config.max_workers == 4
     assert broker.config.prefetch_count == 8
+
+
+def test_the_default_broker_logs() -> None:
+    """No `logger=` means the broker's own logger, as in every FastStream broker.
+
+    Passing `None` through instead of the `EMPTY` sentinel would install
+    `EmptyLoggerStorage`: no subscriber lines, no message lines, and a `Logger`
+    annotation resolving to `None` inside every handler.
+    """
+    storage = CeleryBroker().config.logger.params_storage
+
+    assert isinstance(storage, CeleryParamsStorage)
+
+
+def test_logging_can_be_turned_off() -> None:
+    """`logger=None` is how FastStream spells "no logging at all"."""
+    storage = CeleryBroker(logger=None).config.logger.params_storage
+
+    assert not isinstance(storage, CeleryParamsStorage)
+    assert storage.get_logger(context=ContextRepo()) is None
+
+
+def test_a_custom_logger_is_used_as_given() -> None:
+    logger = logging.getLogger("custom")
+
+    storage = CeleryBroker(logger=logger).config.logger.params_storage
+
+    assert storage.get_logger(context=ContextRepo()) is logger
 
 
 def test_subscriber_prefetch_defaults_to_max_workers() -> None:

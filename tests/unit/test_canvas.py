@@ -234,6 +234,45 @@ class TestDispatcher:
         assert list(cmd.body.chain) == [signature("proj.tasks.d")]
 
     @pytest.mark.asyncio()
+    async def test_a_step_keeps_the_reply_queue_of_its_options(
+        self,
+        dispatcher: CanvasDispatcher,
+        producer: AsyncMock,
+        message: CeleryMessage,
+    ) -> None:
+        """A Celery client freezes its reply queue into each step's options.
+
+        Dropping it would leave the caller of a chain waiting for a result the
+        last step never sends anywhere.
+        """
+        step = signature(
+            "proj.tasks.c",
+            options={"reply_to": "client-oid", "task_id": "frozen-id"},
+        )
+
+        await dispatcher.on_success(message, embed(chain=[step]), result=1)
+
+        (cmd,), _ = producer.publish.call_args
+        assert cmd.reply_to == "client-oid"
+        assert cmd.correlation_id == "frozen-id"
+
+    @pytest.mark.asyncio()
+    async def test_a_step_without_options_replies_nowhere(
+        self,
+        dispatcher: CanvasDispatcher,
+        producer: AsyncMock,
+        message: CeleryMessage,
+    ) -> None:
+        await dispatcher.on_success(
+            message,
+            embed(chain=[signature("proj.tasks.c")]),
+            result=1,
+        )
+
+        (cmd,), _ = producer.publish.call_args
+        assert cmd.reply_to == ""
+
+    @pytest.mark.asyncio()
     async def test_the_last_chain_step_carries_nothing_on(
         self,
         dispatcher: CanvasDispatcher,

@@ -93,6 +93,11 @@ class CanvasDispatcher:
                 ),
                 queue=queue_of(step, _incoming_queue(msg)),
                 correlation_id=options.get("task_id"),
+                # A canvas built by a Celery client freezes each step's task
+                # id and reply queue into its options. Dropping `reply_to`
+                # here would leave the caller of a chain waiting forever for
+                # the last step's result.
+                reply_to=str(options.get("reply_to") or ""),
                 _publish_type=PublishType.PUBLISH,
             ),
         )

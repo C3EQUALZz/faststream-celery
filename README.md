@@ -197,9 +197,19 @@ broker = CeleryBroker(
 )
 ```
 
-Spans and metrics carry the Celery task name, so two tasks on one queue stay
-apart. `faststream docs gen` produces an AsyncAPI schema with the queue,
-exchange and routing key of every subscriber and publisher.
+Spans carry the Celery task name and id, so two tasks on one queue stay apart
+in a trace. Metrics are labelled by queue; add the task name where you want the
+two apart there too:
+
+```python
+CeleryPrometheusMiddleware(
+    registry=registry,
+    custom_labels={"task": lambda msg: (msg.message.headers or {}).get("task", "")},
+)
+```
+
+`faststream docs gen` produces an AsyncAPI schema with the queue, exchange and
+routing key of every subscriber and publisher.
 
 ## Annotations
 

@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from faststream.security import (
     SASLGSSAPI,
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 # Mechanisms that carry credentials kombu has nowhere to put. Falling back to
 # the SSL settings, as the built-in FastStream brokers do, would drop those
 # credentials silently and fail against the broker instead.
-UNSUPPORTED_MECHANISMS = (
+UNSUPPORTED_MECHANISMS: Final[tuple[type[BaseSecurity], ...]] = (
     SASLScram256,
     SASLScram512,
     SASLGSSAPI,

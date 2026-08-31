@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Iterable
 from functools import partial
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import TYPE_CHECKING, Any, Final, Optional, cast
 from urllib.parse import urlparse
 
 import anyio
@@ -45,7 +45,7 @@ from faststream_celery.types import MutableHeaders
 from .logging import make_celery_logger_state
 from .registrator import CeleryRegistrator
 
-DEFAULT_PING_TIMEOUT = 3.0
+DEFAULT_PING_TIMEOUT: Final[float] = 3.0
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
