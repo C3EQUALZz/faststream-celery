@@ -25,7 +25,9 @@ from faststream_celery._internal import (
     dump_json,
     resolve_serializer,
 )
+from faststream_celery.backend import InMemoryResultBackend
 from faststream_celery.broker import CeleryBroker
+from faststream_celery.configs import CeleryBrokerConfig
 from faststream_celery.message import ConsumerMessage, run_inline
 from faststream_celery.parser import CeleryParser, read_headers
 from faststream_celery.publisher.producer import CeleryFastProducer
@@ -115,6 +117,29 @@ async def build_message(  # ruff: ignore[too-many-arguments]
     )
 
     return ConsumerMessage(raw, run_inline)
+
+
+@contextmanager
+def change_result_backend(config: CeleryBrokerConfig) -> Generator[None]:
+    """Swap a configured result backend for an in-process one.
+
+    A broker built with ``result_backend=`` reports every outcome to it, and
+    ``request()`` reads the result back from it — but fake mode never connects,
+    so the real backend has no client to write through. The in-memory stand-in
+    keeps both paths working with no service behind them.
+
+    A broker without a backend keeps having none: `request()` must stay on its
+    reply path, which is what the fake producer answers.
+    """
+    if config.result_backend is None:
+        yield
+        return
+
+    original, config.result_backend = config.result_backend, InMemoryResultBackend()
+    try:
+        yield
+    finally:
+        config.result_backend = original
 
 
 class FakeProducer(CeleryFastProducer):
@@ -254,9 +279,11 @@ class TestCeleryBroker(TestBroker[CeleryBroker, EnterType]):
     @override
     @contextmanager
     def _patch_producer(self, broker: CeleryBroker) -> Generator[None]:
-        with change_producer(
-            broker.config.broker_config,
-            FakeProducer(broker, self.brokers),
+        config = broker.config.broker_config
+
+        with (
+            change_producer(config, FakeProducer(broker, self.brokers)),
+            change_result_backend(config),
         ):
             yield
 

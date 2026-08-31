@@ -1,15 +1,18 @@
 """The result backend: which one a url names, and how Redis stores meta."""
 
 import json
-from typing import Any
+from functools import partial
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import pytest
 from faststream.exceptions import IncorrectState
 from faststream.message.source_type import SourceType
+from pydantic import BaseModel
 
 from faststream_celery import CeleryBroker, CeleryTask, TestCeleryBroker
-from faststream_celery.backend import make_result_backend
+from faststream_celery.backend import InMemoryResultBackend, make_result_backend
 from faststream_celery.backend.redis import (
     DEFAULT_EXPIRES,
     KEY_PREFIX,
@@ -19,6 +22,17 @@ from faststream_celery.message import CeleryMessage, local_message, run_inline
 from faststream_celery.middlewares import CeleryResultMiddleware
 from faststream_celery.schemas.constants import CONTENT_TYPE
 from faststream_celery.schemas.result import build_success
+
+# Never connected to: the backend a fake-mode broker is given is in-memory.
+REDIS_URL = "redis://localhost:6379/0"
+
+REQUEST_TIMEOUT = 5.0
+
+
+class _Report(BaseModel):
+    """A handler result that is not JSON by itself."""
+
+    rows: int
 
 
 class TestFactory:
@@ -180,28 +194,16 @@ class TestRedisBackend:
 
 
 class TestBrokerReportsToTheBackend:
-    @pytest.fixture()
-    def backend(self) -> Any:
-        stored: dict[str, Any] = {}
-        fake = MagicMock()
-        fake.connect = AsyncMock()
-        fake.disconnect = AsyncMock()
-        fake.store = AsyncMock(
-            side_effect=lambda task_id, result: stored.update(
-                {task_id: result},
-            ),
-        )
-        fake.stored = stored
-        return fake
+    """Every outcome is recorded, whichever backend is configured.
+
+    In fake mode the configured backend is swapped for an
+    `InMemoryResultBackend` (nothing is connected), so these read what the
+    broker recorded out of that one.
+    """
 
     @pytest.mark.asyncio()
-    async def test_a_successful_handler_is_recorded(
-        self,
-        backend: Any,
-        queue: str,
-    ) -> None:
-        broker = CeleryBroker()
-        broker.config.broker_config.result_backend = backend
+    async def test_a_successful_handler_is_recorded(self, queue: str) -> None:
+        broker = CeleryBroker(result_backend=REDIS_URL)
 
         @broker.subscriber(queue, task="proj.tasks.add")
         async def handler() -> int:
@@ -214,17 +216,14 @@ class TestBrokerReportsToTheBackend:
                 correlation_id="task-id-1",
             )
 
-        assert backend.stored["task-id-1"]["status"] == "SUCCESS"
-        assert backend.stored["task-id-1"]["result"] == 3
+            recorded = in_memory_backend(broker).results["task-id-1"]
+
+        assert recorded["status"] == "SUCCESS"
+        assert recorded["result"] == 3
 
     @pytest.mark.asyncio()
-    async def test_a_failing_handler_is_recorded(
-        self,
-        backend: Any,
-        queue: str,
-    ) -> None:
-        broker = CeleryBroker()
-        broker.config.broker_config.result_backend = backend
+    async def test_a_failing_handler_is_recorded(self, queue: str) -> None:
+        broker = CeleryBroker(result_backend=REDIS_URL)
 
         @broker.subscriber(queue, task="proj.tasks.add")
         async def handler() -> None:
@@ -239,19 +238,17 @@ class TestBrokerReportsToTheBackend:
                     correlation_id="task-id-1",
                 )
 
-        recorded = backend.stored["task-id-1"]
+            recorded = in_memory_backend(broker).results["task-id-1"]
+
+        failure = cast("dict[str, Any]", recorded["result"])
+
         assert recorded["status"] == "FAILURE"
-        assert recorded["result"]["exc_type"] == "ValueError"
-        assert "ValueError: boom" in recorded["traceback"]
+        assert failure["exc_type"] == "ValueError"
+        assert "ValueError: boom" in str(recorded["traceback"])
 
     @pytest.mark.asyncio()
-    async def test_ignore_result_records_nothing(
-        self,
-        backend: Any,
-        queue: str,
-    ) -> None:
-        broker = CeleryBroker()
-        broker.config.broker_config.result_backend = backend
+    async def test_ignore_result_records_nothing(self, queue: str) -> None:
+        broker = CeleryBroker(result_backend=REDIS_URL)
 
         @broker.subscriber(queue, task="proj.tasks.add")
         async def handler() -> int:
@@ -264,7 +261,157 @@ class TestBrokerReportsToTheBackend:
                 headers={"ignore_result": True},
             )
 
-        assert backend.stored == {}
+            assert in_memory_backend(broker).results == {}
+
+
+class TestTheTestBrokerFakesTheBackend:
+    """`TestCeleryBroker` keeps a backend-configured broker working offline.
+
+    Without the swap, `CeleryResultMiddleware` would report an outcome to a
+    Redis backend that fake mode never connected, and every publish would fail
+    with `IncorrectState`.
+    """
+
+    @pytest.mark.asyncio()
+    async def test_a_configured_backend_is_replaced(self, queue: str) -> None:
+        broker = CeleryBroker(result_backend=REDIS_URL)
+
+        @broker.subscriber(queue, task="proj.tasks.add")
+        async def handler() -> int:
+            return 3
+
+        async with TestCeleryBroker(broker):
+            await broker.publish(CeleryTask("proj.tasks.add"), queue=queue)
+
+            assert isinstance(
+                broker.config.broker_config.result_backend,
+                InMemoryResultBackend,
+            )
+
+    @pytest.mark.asyncio()
+    async def test_the_configured_backend_is_restored(self, queue: str) -> None:
+        broker = CeleryBroker(result_backend=REDIS_URL)
+        original = broker.config.broker_config.result_backend
+
+        @broker.subscriber(queue, task="proj.tasks.add")
+        async def handler() -> int:
+            return 3
+
+        async with TestCeleryBroker(broker):
+            pass
+
+        assert broker.config.broker_config.result_backend is original
+
+    @pytest.mark.asyncio()
+    async def test_a_broker_without_a_backend_keeps_having_none(
+        self,
+        queue: str,
+    ) -> None:
+        """`request()` must stay on its reply path, which the fake answers."""
+        broker = CeleryBroker()
+
+        @broker.subscriber(queue, task="proj.tasks.add")
+        async def handler() -> int:
+            return 3
+
+        async with TestCeleryBroker(broker):
+            assert broker.config.broker_config.result_backend is None
+
+            response = await broker.request(CeleryTask("proj.tasks.add"), queue=queue)
+
+            # The handler's return value, not a result envelope.
+            assert await response.decode() == 3
+
+    @pytest.mark.asyncio()
+    async def test_request_reads_the_result_out_of_the_backend(
+        self,
+        queue: str,
+    ) -> None:
+        """With a backend, `request()` waits for the recorded envelope."""
+        broker = CeleryBroker(result_backend=REDIS_URL)
+
+        @broker.subscriber(queue, task="proj.tasks.add")
+        async def handler() -> int:
+            return 3
+
+        async with TestCeleryBroker(broker):
+            response = await broker.request(
+                CeleryTask("proj.tasks.add"),
+                queue=queue,
+                correlation_id="task-id-1",
+                timeout=REQUEST_TIMEOUT,
+            )
+            envelope = await response.decode()
+
+        assert isinstance(envelope, dict)
+        assert envelope["task_id"] == "task-id-1"
+        assert envelope["status"] == "SUCCESS"
+        assert envelope["result"] == 3
+
+
+class TestInMemoryBackend:
+    @pytest.mark.asyncio()
+    async def test_a_stored_result_is_loaded_back(self) -> None:
+        backend = InMemoryResultBackend()
+        envelope = build_success("task-id-1", 3)
+
+        await backend.store("task-id-1", envelope)
+
+        assert await backend.load("task-id-1") == envelope
+
+    @pytest.mark.asyncio()
+    async def test_an_unknown_task_loads_as_none(self) -> None:
+        assert await InMemoryResultBackend().load("task-id-1") is None
+
+    @pytest.mark.asyncio()
+    async def test_wait_returns_a_result_stored_before_it(self) -> None:
+        backend = InMemoryResultBackend()
+        envelope = build_success("task-id-1", 3)
+        await backend.store("task-id-1", envelope)
+
+        assert await backend.wait("task-id-1", timeout=REQUEST_TIMEOUT) == envelope
+
+    @pytest.mark.asyncio()
+    async def test_wait_returns_a_result_stored_after_it(self) -> None:
+        """A waiter is woken by the store, rather than polling for it."""
+        backend = InMemoryResultBackend()
+        envelope = build_success("task-id-1", 3)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(partial(backend.store, "task-id-1", envelope))
+
+            assert await backend.wait("task-id-1", timeout=REQUEST_TIMEOUT) == envelope
+
+    @pytest.mark.asyncio()
+    async def test_wait_times_out_without_a_result(self) -> None:
+        backend = InMemoryResultBackend()
+
+        with pytest.raises(TimeoutError, match="task-id-1"):
+            await backend.wait("task-id-1", timeout=0.01)
+
+    @pytest.mark.asyncio()
+    async def test_a_result_is_serialized_on_the_way_in(self) -> None:
+        """As a real backend stores it: a model comes back as JSON, not itself.
+
+        A result a Celery client could not read fails in the test, rather than
+        against a live broker.
+        """
+        backend = InMemoryResultBackend()
+
+        await backend.store("task-id-1", build_success("task-id-1", _Report(rows=3)))
+        recorded = await backend.load("task-id-1")
+
+        assert recorded is not None
+        assert recorded["result"] == {"rows": 3}
+
+    @pytest.mark.asyncio()
+    async def test_disconnect_forgets_everything(self) -> None:
+        backend = InMemoryResultBackend()
+        await backend.store("task-id-1", build_success("task-id-1", 3))
+
+        await backend.disconnect()
+
+        assert await backend.load("task-id-1") is None
 
 
 class TestReplyMessagesAreNotResults:
@@ -302,6 +449,14 @@ class TestReplyMessagesAreNotResults:
         await middleware.consume_scope(_identity, reply)
 
         assert stored == {}
+
+
+def in_memory_backend(broker: CeleryBroker) -> InMemoryResultBackend:
+    """The backend `TestCeleryBroker` put in place of the configured one."""
+    backend = broker.config.broker_config.result_backend
+
+    assert isinstance(backend, InMemoryResultBackend)
+    return backend
 
 
 async def _identity(msg: Any) -> Any:

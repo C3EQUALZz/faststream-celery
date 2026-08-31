@@ -118,7 +118,11 @@ breaking the API).
   Celery client → our broker, and our broker → a real `celery worker`
   (including result delivery).
 - `TestCeleryBroker` (an in-memory fake modeled on
-  `faststream/redis/testing.py`) for users' application tests.
+  `faststream/redis/testing.py`) for users' application tests. It swaps the
+  producer *and* the result backend: fake mode connects nothing, so a broker
+  configured with `result_backend=` gets an `InMemoryResultBackend` for the
+  duration, and both reporting and `request()` keep working offline. A broker
+  without a backend keeps having none, so `request()` stays on its reply path.
 
 ### 12. Dependencies and versioning
 

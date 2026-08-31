@@ -140,6 +140,30 @@ async def test_send_email() -> None:
 
 Assert inside the block: the mocks are reset on the way out.
 
+A broker configured with `result_backend=` works there too — the backend is
+swapped for an in-memory one, so results are recorded and `request()` reads
+them back with no Redis to run:
+
+```python
+from faststream_celery.backend import InMemoryResultBackend
+
+
+async def test_the_result_is_recorded() -> None:
+    async with TestCeleryBroker(broker):
+        response = await broker.request(
+            CeleryTask("proj.tasks.add", args=[2, 3]),
+            queue="celery",
+            correlation_id="task-id-1",
+        )
+
+        envelope = await response.decode()
+        assert envelope["status"] == "SUCCESS"
+
+        backend = broker.config.broker_config.result_backend
+        assert isinstance(backend, InMemoryResultBackend)
+        assert backend.results["task-id-1"]["result"] == 5
+```
+
 ## FastAPI
 
 ```python
@@ -187,6 +211,21 @@ from faststream_celery.annotations import CeleryMessage, Logger
 async def add(message: CeleryMessage, logger: Logger) -> None:
     logger.info("running %s", message.headers["task"])
 ```
+
+## Examples
+
+[`examples/`](./examples) has one directory per scenario, with **both sides
+present** — a FastStream app and the stock Celery process it talks to — so you
+can start them and watch the tasks cross:
+
+|                                                                  |                                                                        |
+|------------------------------------------------------------------|------------------------------------------------------------------------|
+| [`01_celery_to_faststream/`](./examples/01_celery_to_faststream) | a Celery client's tasks served by FastStream handlers                  |
+| [`02_faststream_to_celery/`](./examples/02_faststream_to_celery) | tasks we publish, run by a real `celery worker`                        |
+| [`03_both_ways/`](./examples/03_both_ways)                       | one call crossing the boundary four times                              |
+| [`04_payload_validation/`](./examples/04_payload_validation)     | three ways to validate a task payload with Pydantic                    |
+| [`05_fastapi/`](./examples/05_fastapi)                           | HTTP routes and task handlers in one app                               |
+| …                                                                | canvas, results, scheduling, routers, observability, testing, security |
 
 ## Contributing
 
