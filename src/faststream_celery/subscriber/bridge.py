@@ -25,6 +25,16 @@ if TYPE_CHECKING:
 
 _PendingAction = tuple[Callable[[], None], "asyncio.Future[None]"]
 
+# How long the thread blocks on the socket while a delivery is still
+# unsettled.
+#
+# An acknowledgement queued by the event loop runs only once the thread comes
+# back from `drain_events`, and a blocking read is woken by an incoming frame —
+# which, with the QoS window full, is the very message the acknowledgement
+# would have made room for. Idling at `drain_timeout` there would cap a
+# `prefetch_count=1` subscriber at one message per `drain_timeout`.
+SETTLE_DRAIN_TIMEOUT = 0.01
+
 
 def _resolve_future(future: "asyncio.Future[None]") -> None:
     if not future.done():
@@ -62,6 +72,10 @@ class ConsumerBridge:
         self._prefetch_changed = threading.Event()
         self._error: BaseException | None = None
         self._consuming = False
+
+        # Deliveries handed to the event loop and not settled yet. Touched by
+        # the consumer thread only.
+        self._unsettled = 0
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -124,6 +138,7 @@ class ConsumerBridge:
     def _on_message(self, message: "Message") -> None:
         """Consumer-thread callback: hand the message to the event loop."""
         if self._loop is not None:
+            self._unsettled += 1
             self._loop.call_soon_threadsafe(
                 self._messages.put_nowait,
                 ConsumerMessage(message, self.execute),
@@ -175,9 +190,16 @@ class ConsumerBridge:
             self._run_actions()
             self._apply_prefetch(consumer)
             try:
-                connection.drain_events(timeout=self._drain_timeout)
+                connection.drain_events(timeout=self._next_timeout())
             except TimeoutError:
                 continue
+
+    def _next_timeout(self) -> float:
+        """How long to block on the socket before running queued actions."""
+        if self._unsettled:
+            return min(self._drain_timeout, SETTLE_DRAIN_TIMEOUT)
+
+        return self._drain_timeout
 
     def _apply_prefetch(self, consumer: Consumer) -> None:
         if self._prefetch_changed.is_set():
@@ -193,6 +215,8 @@ class ConsumerBridge:
             except queue.Empty:
                 return
 
+            self._unsettled = max(0, self._unsettled - 1)
+
             try:
                 action()
             except SETTLE_ERRORS as exc:
@@ -204,6 +228,8 @@ class ConsumerBridge:
 
     def _abandon_actions(self) -> None:
         """Fail every ack still queued, so no caller waits on a dead thread."""
+        self._unsettled = 0
+
         while True:
             try:
                 _, future = self._actions.get_nowait()

@@ -155,7 +155,7 @@ class CeleryBroker(
             broker_decoder=decoder,
             broker_codec=codec,
             logger=make_celery_logger_state(
-                logger=None if logger is EMPTY else logger,
+                logger=logger,
                 log_level=log_level,
             ),
             fd_config=FastDependsConfig(
