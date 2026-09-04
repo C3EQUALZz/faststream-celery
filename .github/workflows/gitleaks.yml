@@ -20,4 +20,6 @@ jobs:
       - name: gitleaks (filesystem scan)
         run: >-
           docker run --rm -v "${{ github.workspace }}:/repo"
-          ghcr.io/gitleaks/gitleaks:v8.30.1 dir /repo --redact --exit-code 1
+          ghcr.io/gitleaks/gitleaks:v8.30.1 dir /repo
+          --config /repo/.gitleaks.toml
+          --redact --exit-code 1
