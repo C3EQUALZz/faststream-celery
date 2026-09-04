@@ -40,7 +40,7 @@ examples.charge with retries=9 -> rejected, watch the app log
 
 * A middleware's `consume_scope` sees the message before the handler and sees
   whatever the handler raised. Raising `RejectMessage` drops the task without
-  requeueing it — the way a Celery worker rejects an unregistered task.
+  requeuing it — the way a Celery worker rejects an unregistered task.
 * `dependencies=(Depends(within_limit),)` runs a check for its side effect
   only. Pydantic covers the *shape* of a payload; a dependency covers the
   policy the shape cannot express, in one place instead of at the top of every

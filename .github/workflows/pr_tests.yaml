@@ -107,7 +107,7 @@ jobs:
       # pytest-asyncio is configured via pyproject/ini;
       # keeps the suite green while tests/ is still being filled in.
       - name: Run unit tests
-        run: uv run pytest tests/unit --cov --cov-report=xml
+        run: uv run --python ${{ matrix.python-version }} pytest tests/unit --cov --cov-report=xml
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
@@ -142,7 +142,7 @@ jobs:
       # `--python` selects only the sessions parametrized for this version, so
       # the matrix is spread across jobs instead of one long serial run.
       - name: Run the dependency matrix
-        run: uv run nox --python ${{ matrix.python-version }} -s tests
+        run: uv run --python ${{ matrix.python-version }} nox --python ${{ matrix.python-version }} -s tests
 
   integration:
     name: Integration tests (testcontainers)
@@ -163,4 +163,4 @@ jobs:
         run: uv sync --frozen --python "3.13"
 
       - name: Run integration tests
-        run: uv run pytest tests/integration -m "connected"
+        run: uv run --python "3.13" pytest tests/integration -m "connected"

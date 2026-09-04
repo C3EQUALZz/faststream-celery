@@ -51,7 +51,7 @@ def test_schema_is_generated_and_json_serializable() -> None:
 
     sch = schema(broker)
 
-    assert json.loads(json.dumps(schema)) == sch
+    assert json.loads(json.dumps(sch)) == sch
     assert sch["asyncapi"] == "3.0.0"
 
 
