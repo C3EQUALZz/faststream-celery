@@ -120,7 +120,7 @@ jobs:
   nox:
     name: Dependency matrix (Python ${{ matrix.python-version }})
     # The package builds on the private `faststream._internal` API, so every
-    # Python runs against both ends of the pinned faststream and kombu ranges.
+    # Python runs against the minimum/latest faststream and kombu versions.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

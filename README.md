@@ -247,6 +247,13 @@ uv run nox                                      # every Python, both ends of the
 uv run nox -s lint                              # ruff and mypy
 ```
 
+CI tests pinned minimum and latest released FastStream/Kombu versions across
+Python 3.10–3.14. The latest-release combination also runs daily at 04:23 UTC:
+
+```bash
+uv run nox -s tests -k 'faststream_latest and kombu_latest'
+```
+
 `AGENTS.md` has the development guidelines and the `justfile` the day-to-day
 commands.
 

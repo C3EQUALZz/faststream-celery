@@ -130,12 +130,14 @@ breaking the API).
 
 ### 12. Dependencies and versioning
 
-- `faststream>=0.7.5,<0.8` — a custom broker inherits from the private
+- `faststream>=0.7.5` — a custom broker inherits from the private
   `faststream._internal` API; the dependency on it is isolated in a single
   adapter module of the project.
 - `kombu>=5.3,<6` — a public, stable API.
-- Version matrix via **nox**; a nightly CI run against `faststream@main` for
-  early breakage detection.
+- Version matrix via **nox** tests the minimum and latest supported releases
+  of FastStream and kombu across Python 3.10–3.14. A daily CI run tests the
+  latest released versions at 04:23 UTC. Unreleased upstream code is outside
+  the compatibility checks.
 
 ### 13. Serialization
 
@@ -193,7 +195,7 @@ for `faststream docs`.
 
 | Risk | Mitigation |
 |---|---|
-| Private `faststream._internal` breaks between releases | Minor-range pin, nox matrix, nightly CI against main, adapter module |
+| Private `faststream._internal` breaks between releases | Minimum/latest release nox matrix, adapter module |
 | Chord — complex coordination via the result backend | A dedicated implementation stage |
 | Redis virtual transport (`unacked`, `visibility_timeout`) | Integration tests against live Celery from day one |
 | Client and worker `visibility_timeout` must match | Document; `transport_options` are passed through |

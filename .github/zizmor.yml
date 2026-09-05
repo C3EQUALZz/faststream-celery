@@ -7,5 +7,5 @@ rules:
   unpinned-uses:
     config:
       policies:
-        # pr_tests.yaml / nightly-faststream-main.yaml pin by version tag.
+        # pr_tests.yaml pins by version tag.
         "*": ref-pin

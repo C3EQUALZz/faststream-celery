@@ -73,9 +73,8 @@ reviews:
     - path: ".github/workflows/**"
       instructions: >-
         Third-party actions should be pinned to a full commit SHA with the
-        version in a trailing comment (pr_tests.yaml and
-        nightly-faststream-main.yaml predate this convention). Checkout uses
-        persist-credentials: false unless the job pushes. Permissions are
+        version in a trailing comment (pr_tests.yaml predates this convention).
+        Checkout uses persist-credentials: false unless the job pushes. Permissions are
         least-privilege and declared per job. Flag any workflow that checks out
         pull-request code under pull_request_target.
 
