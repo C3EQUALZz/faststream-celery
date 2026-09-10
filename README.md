@@ -3,6 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/faststream-celery.svg)](https://pypi.org/project/faststream-celery/)
 [![Python](https://img.shields.io/pypi/pyversions/faststream-celery.svg)](https://pypi.org/project/faststream-celery/)
 [![License](https://img.shields.io/pypi/l/faststream-celery.svg)](./LICENSE)
+[![Downloads](https://img.shields.io/pypi/dm/faststream-celery.svg)](https://pypi.org/project/faststream-celery/)
 
 A [FastStream](https://github.com/ag2ai/faststream) broker that speaks Celery.
 
