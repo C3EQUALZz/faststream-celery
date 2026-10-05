@@ -9,6 +9,7 @@ from typing_extensions import override
 
 from faststream_celery._internal import SubscriberSpecification
 from faststream_celery.configs import CeleryBrokerConfig
+from faststream_celery.schemas.specification import channel_spec
 from faststream_celery.schemas.topology import build_topology
 
 from .config import CelerySubscriberSpecificationConfig
@@ -20,6 +21,11 @@ class CelerySubscriberSpecification(
     @property
     def queue(self) -> str:
         return f"{self._outer_config.prefix}{self.config.queue}"
+
+    @property
+    @override
+    def channel_labels(self) -> list[str]:
+        return [self.queue]
 
     @property
     @override
@@ -36,7 +42,9 @@ class CelerySubscriberSpecification(
         channel_name = self.name
 
         return {
-            channel_name: SubscriberSpec(
+            channel_name: channel_spec(
+                SubscriberSpec,
+                address=topology.routing_key,
                 description=self.description,
                 operation=Operation(
                     bindings=OperationBinding(

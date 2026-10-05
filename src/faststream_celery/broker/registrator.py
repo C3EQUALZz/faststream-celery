@@ -96,7 +96,7 @@ class CeleryRegistrator(Registrator[ConsumerMessage, CeleryBrokerConfig]):
             parser_=parser or self._parser,
             decoder_=decoder or self._decoder,
             codec_=codec,
-            dependencies_=dependencies,
+            dependencies_=tuple(dependencies),
         )
 
     @override
@@ -177,7 +177,7 @@ class CeleryRegistrator(Registrator[ConsumerMessage, CeleryBrokerConfig]):
         super().include_router(
             router,
             prefix=prefix,
-            dependencies=dependencies,
+            dependencies=tuple(dependencies),
             middlewares=middlewares,
             include_in_schema=include_in_schema,
         )

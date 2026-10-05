@@ -142,12 +142,20 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
         if self.config.task is not None and filter is default_filter:
             task_filter = partial(_task_filter, self.config.task)
 
+        if func is None:
+            return super().__call__(
+                filter=task_filter,
+                parser=parser,
+                decoder=decoder,
+                dependencies=tuple(dependencies),
+            )
+
         return super().__call__(
             func,
             filter=task_filter,
             parser=parser,
             decoder=decoder,
-            dependencies=dependencies,
+            dependencies=tuple(dependencies),
         )
 
     @override
@@ -262,7 +270,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
         )
 
     @override
-    async def __aiter__(self) -> AsyncIterator["CeleryMessage"]:  # type: ignore[override]
+    async def __aiter__(self) -> AsyncIterator["CeleryMessage"]:
         if self._consumer is None:
             msg = "You should start subscriber at first."
             raise IncorrectState(msg)
