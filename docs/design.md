@@ -189,7 +189,10 @@ Public exports: `from faststream_celery import CeleryBroker, CeleryRouter, TestC
 
 AsyncAPI specifications: minimal `SubscriberSpecification`/
 `PublisherSpecification` subclasses (queue/exchange/routing key) — required
-for `faststream docs`.
+for `faststream docs`. The channel label identifies the documented endpoint;
+the channel address is its routing key. The adapter passes that address to
+FastStream releases whose channel spec models require it while preserving the
+minimum supported 0.7.5 release.
 
 ## Risks
 

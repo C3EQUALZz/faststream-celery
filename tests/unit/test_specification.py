@@ -1,8 +1,10 @@
 import json
+from dataclasses import fields
 from typing import Any
 
 import pytest
 from faststream.specification import AsyncAPI
+from faststream.specification.schema import PublisherSpec, SubscriberSpec
 
 from faststream_celery import CeleryBroker, CeleryRouter
 from faststream_celery.schemas.constants import PERSISTENT_DELIVERY_MODE
@@ -68,6 +70,8 @@ def test_subscriber_channel_carries_the_queue_binding() -> None:
     assert binding["queue"]["name"] == "celery"
     assert binding["queue"]["durable"] is True
     assert binding["queue"]["vhost"] == "/"
+    if any(field.name == "address" for field in fields(SubscriberSpec)):
+        assert channels["celery:Handler"]["address"] == "celery"
 
 
 def test_subscriber_operation_carries_the_routing_key() -> None:
@@ -93,6 +97,8 @@ def test_publisher_channel_carries_the_exchange_binding() -> None:
     binding = channels["results:results:Publisher"]["bindings"]["amqp"]
     assert binding["exchange"]["name"] == "results"
     assert binding["exchange"]["type"] == "direct"
+    if any(field.name == "address" for field in fields(PublisherSpec)):
+        assert channels["results:results:Publisher"]["address"] == "results"
 
 
 def test_publisher_operation_documents_the_reply_queue() -> None:
@@ -132,6 +138,8 @@ def test_publisher_channel_name_uses_a_custom_exchange() -> None:
     channels = schema(broker)["channels"]
 
     assert "results:tasks:Publisher" in channels
+    if any(field.name == "address" for field in fields(PublisherSpec)):
+        assert channels["results:tasks:Publisher"]["address"] == "high"
 
 
 def test_router_prefix_reaches_the_schema() -> None:
