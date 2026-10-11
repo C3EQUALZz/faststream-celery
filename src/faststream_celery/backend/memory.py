@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, cast
 import anyio
 
 from faststream_celery._internal import dump_json
+from faststream_celery.schemas.result import READY_STATES
 
 if TYPE_CHECKING:
     from faststream_celery.schemas.result import TaskResult
@@ -26,8 +27,7 @@ class InMemoryResultBackend:
     def __init__(self) -> None:
         self.results: dict[str, TaskResult] = {}
 
-        # One event per task id, so `wait()` returns as soon as the result is
-        # recorded instead of polling for it.
+        # One event per task id wakes current waiters on the next state change.
         self._arrived: dict[str, anyio.Event] = {}
 
     async def connect(self) -> None:
@@ -48,17 +48,21 @@ class InMemoryResultBackend:
         stored = cast("TaskResult", json.loads(dump_json(result)))
 
         self.results[task_id] = stored
-        self._event_for(task_id).set()
+        if (event := self._arrived.pop(task_id, None)) is not None:
+            event.set()
 
     async def load(self, task_id: str) -> "TaskResult | None":
         """Read a recorded outcome, or ``None`` while the task is pending."""
         return self.results.get(task_id)
 
     async def wait(self, task_id: str, *, timeout: float) -> "TaskResult":
-        """Block until the task has an outcome, or raise ``TimeoutError``."""
+        """Block until the task has a terminal outcome, or raise ``TimeoutError``."""
         with anyio.move_on_after(timeout):
-            await self._event_for(task_id).wait()
-            return self.results[task_id]
+            while True:
+                result = await self.load(task_id)
+                if result is not None and result["status"] in READY_STATES:
+                    return result
+                await self._event_for(task_id).wait()
 
         msg = f"No Celery result for task {task_id!r} within {timeout} seconds."
         raise TimeoutError(msg)

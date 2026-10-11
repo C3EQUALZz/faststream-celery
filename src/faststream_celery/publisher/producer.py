@@ -1,5 +1,6 @@
 import json
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Mapping
 from functools import partial
 from time import monotonic
 from typing import TYPE_CHECKING, Final, NamedTuple, Optional, cast
@@ -27,6 +28,7 @@ from faststream_celery.schemas.constants import (
     SERIALIZATION_ACCEPT,
     SERIALIZER,
 )
+from faststream_celery.schemas.result import READY_STATES
 from faststream_celery.schemas.task import CeleryTask, build_task_envelope
 from faststream_celery.types import MutableHeaders, TaskBody
 
@@ -163,7 +165,7 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
                 factory,
                 payload,
                 destination,
-                timeout=cmd.timeout or DEFAULT_REQUEST_TIMEOUT,
+                timeout=(DEFAULT_REQUEST_TIMEOUT if cmd.timeout is None else cmd.timeout),
             ),
         )
 
@@ -271,7 +273,7 @@ def request_sync(
     timeout: float,
 ) -> "Message":
     """Publish and block until the matching reply lands on a temporary queue."""
-    replies: list[Message] = []
+    replies: deque[Message] = deque()
 
     with connection_factory() as connection:
         channel = connection.channel()
@@ -305,7 +307,7 @@ def request_sync(
         consumer.consume()
 
         deadline = monotonic() + timeout
-        while not replies:
+        while True:
             remaining = deadline - monotonic()
             if remaining <= 0:
                 msg = (
@@ -314,9 +316,20 @@ def request_sync(
                 )
                 raise TimeoutError(msg)
 
+            if replies:
+                reply = replies.popleft()
+                if reply.properties.get("correlation_id") == payload.correlation_id:
+                    result = reply.decode()
+                    if (
+                        isinstance(result, Mapping)
+                        and result.get("task_id") == payload.correlation_id
+                        and result.get("status") in READY_STATES
+                    ):
+                        return reply
+                reply.ack()
+                continue
+
             try:
                 connection.drain_events(timeout=remaining)
             except TimeoutError:
                 continue
-
-    return replies[0]

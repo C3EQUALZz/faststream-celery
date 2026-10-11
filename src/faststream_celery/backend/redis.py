@@ -12,6 +12,7 @@ import anyio
 from faststream.exceptions import IncorrectState
 
 from faststream_celery._internal import dump_json
+from faststream_celery.schemas.result import READY_STATES
 
 try:
     from redis.asyncio import Redis
@@ -91,10 +92,11 @@ class RedisResultBackend:
         *,
         timeout: float,
     ) -> "TaskResult":
-        """Poll until the task has a result, the way `AsyncResult.get()` does."""
+        """Poll until the task has a terminal result, like `AsyncResult.get()`."""
         with anyio.move_on_after(timeout):
             while True:
-                if (result := await self.load(task_id)) is not None:
+                result = await self.load(task_id)
+                if result is not None and result["status"] in READY_STATES:
                     return result
 
                 await anyio.sleep(self.poll_interval)

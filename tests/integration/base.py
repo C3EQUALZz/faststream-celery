@@ -42,6 +42,56 @@ def wait_for_log(log_file: Path, timeout: float = WORKER_TIMEOUT) -> list[Any]:
     return read_log(log_file)
 
 
+class RequestTestcase:
+    """Terminal result waiting with a real Celery worker on either backend."""
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("fail", (False, True))
+    async def test_request_waits_through_worker_progress_and_retry(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        celery_worker: Path,  # ruff: ignore[unused-method-argument]
+        fail: bool,
+    ) -> None:
+        async with running(broker):
+            response = await broker.request(
+                CeleryTask("tests.progress", kwargs={"fail": fail}),
+                queue=queue,
+                correlation_id=f"{queue}-result",
+                timeout=WORKER_TIMEOUT,
+            )
+            envelope = await response.decode()
+
+        assert isinstance(envelope, dict)
+        assert envelope["task_id"] == f"{queue}-result"
+        if fail:
+            assert envelope["status"] == "FAILURE"
+            assert envelope["result"]["exc_type"] == "ValueError"
+            assert envelope["result"]["exc_message"] == ["failure after retry"]
+        else:
+            assert envelope["status"] == "SUCCESS"
+            assert envelope["result"] == 7
+
+    @pytest.mark.asyncio()
+    async def test_request_times_out_while_the_worker_is_retrying(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        celery_worker: Path,  # ruff: ignore[unused-method-argument]
+    ) -> None:
+        async with running(broker):
+            with pytest.raises(TimeoutError, match=r"No Celery (reply|result)"):
+                await asyncio.wait_for(
+                    broker.request(
+                        CeleryTask("tests.progress", kwargs={"retry_delay": 5}),
+                        queue=queue,
+                        timeout=0.3,
+                    ),
+                    timeout=2,
+                )
+
+
 class TransportTestcase:
     """Wire compatibility with a live Celery, on one kombu transport."""
 

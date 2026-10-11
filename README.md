@@ -101,6 +101,10 @@ result = await response.decode()  # {"status": "SUCCESS", "result": 5, ...}
 Without a result backend that waits on a temporary AMQP reply queue. With one it
 reads `celery-task-meta-<id>`, exactly as `AsyncResult.get()` does.
 
+`request()` waits for `SUCCESS`, `FAILURE` or `REVOKED`. Intermediate states
+such as `STARTED`, `RETRY` and custom progress states keep waiting within the
+same timeout. A failure or revocation is returned as its Celery result envelope.
+
 ## Transports and results
 
 ```python
