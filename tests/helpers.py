@@ -6,17 +6,21 @@ confusing collection errors.
 """
 
 import json
+import threading
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from kombu import Message
+from kombu import Connection, Message
 from typing_extensions import override
 
 from faststream_celery import CeleryBroker, CeleryTask
 from faststream_celery.message import ConsumerMessage
 from faststream_celery.schemas.task import build_task_envelope
+
+if TYPE_CHECKING:
+    from kombu.transport.base import StdChannel
 
 # kombu's in-process transport: a real Consumer, real acks, real
 # `drain_events`, and no broker to run.
@@ -26,6 +30,53 @@ JSON_CONTENT_TYPE = "application/json"
 
 DEFAULT_TASK = "proj.tasks.add"
 DEFAULT_TASK_ID = "task-id-1"
+
+
+class ConnectionFaults:
+    """Disconnect real Kombu connections at a controlled consumer-thread boundary."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.connections: list[Connection] = []
+        self.disconnect = threading.Event()
+        self.disconnected = threading.Event()
+        self.pause = threading.Event()
+        self.resume = threading.Event()
+        self.unavailable = threading.Event()
+        self.unavailable_attempted = threading.Event()
+        self.error: Exception = OSError("Consumer connection lost.")
+
+    def __call__(self) -> Connection:
+        connection = _FaultyConnection(self)
+        self.connections.append(connection)
+        return connection
+
+
+class _FaultyConnection(Connection):
+    def __init__(self, faults: ConnectionFaults) -> None:
+        super().__init__(faults.url)
+        self._faults = faults
+
+    @override
+    def channel(self) -> "StdChannel":
+        if self._faults.unavailable.is_set():
+            self._faults.unavailable_attempted.set()
+            msg = "Broker is unavailable."
+            raise OSError(msg)
+        return super().channel()
+
+    @override
+    def drain_events(self, **kwargs: Any) -> None:
+        faults = self._faults
+        if faults.disconnect.is_set():
+            faults.disconnect.clear()
+            faults.disconnected.set()
+            if faults.pause.is_set() and not faults.resume.wait(timeout=5.0):
+                msg = "The test did not release the disconnect gate."
+                raise TimeoutError(msg)
+            self.close()
+            raise faults.error
+        super().drain_events(**kwargs)
 
 
 class RecordingMessage(Message):

@@ -86,7 +86,15 @@ class SharedConsumer:
 
     async def _route_forever(self) -> None:
         while True:
-            msg = await self.bridge.get()
+            try:
+                msg = await self.bridge.get()
+            except IncorrectState as exc:
+                self._logger.log(
+                    f"Consumer stopped: {exc!r}",
+                    logging.ERROR,
+                    exc_info=exc,
+                )
+                return
 
             try:
                 await self._route(msg)
@@ -135,6 +143,11 @@ class ConsumerRegistry:
     def __init__(self) -> None:
         self._consumers: dict[str, SharedConsumer] = {}
 
+    @property
+    def is_alive(self) -> bool:
+        """Whether all registered queue consumers are currently consuming."""
+        return all(consumer.bridge.is_alive for consumer in self._consumers.values())
+
     def acquire(
         self,
         *,
@@ -160,6 +173,7 @@ class ConsumerRegistry:
                 queue_name=queue,
                 accept=accept,
                 prefetch_count=prefetch_count,
+                logger=logger,
             ),
             logger,
         )

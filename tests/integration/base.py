@@ -13,9 +13,12 @@ from typing import Any
 
 import pytest
 from celery import Celery
+from faststream.exceptions import IncorrectState
+from faststream.middlewares import AckPolicy
 
 from faststream_celery import CeleryBroker, CeleryTask, signature
-from tests.helpers import running
+from faststream_celery.annotations import CeleryMessage
+from tests.helpers import ConnectionFaults, running
 
 from .celery_tasks import read_log
 
@@ -41,6 +44,80 @@ def wait_for_log(log_file: Path, timeout: float = WORKER_TIMEOUT) -> list[Any]:
 
 class TransportTestcase:
     """Wire compatibility with a live Celery, on one kombu transport."""
+
+    @pytest.mark.asyncio()
+    async def test_consumer_recovers_after_connection_loss(
+        self,
+        broker: CeleryBroker,
+        celery_app: Celery,
+        queue: str,
+        event: asyncio.Event,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Celery tasks resume after closing the read connection on its thread."""
+        faults = ConnectionFaults(broker.config.broker_config.url)
+        monkeypatch.setattr(broker.config.broker_config, "make_connection", faults)
+        received: list[int] = []
+
+        @broker.subscriber(queue, task="tests.add", ack_policy=AckPolicy.MANUAL)
+        async def handler(
+            args: list[int],
+            kwargs: dict[str, Any],
+            message: CeleryMessage,
+        ) -> None:
+            await message.ack()
+            received.append(args[0])
+            event.set()
+
+        async with running(broker):
+            celery_app.send_task("tests.add", args=[1], queue=queue, ignore_result=True)
+            await wait_for(event)
+            event.clear()
+
+            faults.unavailable.set()
+            faults.disconnect.set()
+            try:
+                assert await asyncio.to_thread(
+                    faults.unavailable_attempted.wait,
+                    timeout=CONSUME_TIMEOUT,
+                )
+                assert not await broker.ping()
+            finally:
+                faults.unavailable.clear()
+
+            celery_app.send_task("tests.add", args=[2], queue=queue, ignore_result=True)
+            await wait_for(event)
+            assert await broker.ping()
+
+        assert received == [1, 2]
+
+    @pytest.mark.asyncio()
+    async def test_unacked_task_is_redelivered_after_recovery(
+        self,
+        broker: CeleryBroker,
+        celery_app: Celery,
+        queue: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Old acks fail; the broker's redelivery belongs to the new channel."""
+        faults = ConnectionFaults(broker.config.broker_config.url)
+        monkeypatch.setattr(broker.config.broker_config, "make_connection", faults)
+        subscriber = broker.subscriber(queue)
+        async with running(broker):
+            celery_app.send_task("tests.add", args=[7], queue=queue, ignore_result=True)
+            old = await subscriber.get_one(timeout=CONSUME_TIMEOUT)
+            assert old is not None
+
+            faults.disconnect.set()
+            redelivered = await subscriber.get_one(timeout=CONSUME_TIMEOUT)
+            assert redelivered is not None
+            assert redelivered.message_id == old.message_id
+            assert await redelivered.decode() == {"args": [7], "kwargs": {}}
+
+            with pytest.raises(IncorrectState, match="closed"):
+                await old.ack()
+            await redelivered.ack()
+            assert await broker.ping()
 
     @pytest.mark.asyncio()
     async def test_celery_client_reaches_our_subscriber(

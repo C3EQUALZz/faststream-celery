@@ -352,7 +352,7 @@ class CeleryBroker(
     @override
     async def ping(self, timeout: float | None = 3) -> bool:
         connection = self._connection
-        if connection is None:
+        if connection is None or not self.config.broker_config.consumers.is_alive:
             return False
 
         try:

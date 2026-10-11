@@ -48,6 +48,11 @@ on `headers["task"]` via the stock FastStream filter mechanism. The `task`
 parameter is optional: without it, the handler accepts everything in the queue.
 The fate of filtered-out messages follows the stock FastStream filter rules.
 
+The task-name filter dispatches within this application; it does not route
+between competing worker processes. During migration, use separate queues and
+`task_routes` for different executor task sets. Sharing a queue requires every
+consumer to serve every task routed to it. See ADR-0003.
+
 ### 5. Task results (full scope)
 
 - **AMQP RPC** (`reply_to` / `correlation_id`) — as a worker (we publish the

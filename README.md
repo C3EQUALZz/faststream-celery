@@ -116,6 +116,15 @@ on every commit. On Redis, `visibility_timeout` has to match across every client
 and worker sharing the bus — otherwise one side redelivers what another is still
 working on.
 
+After a consumer has started, recoverable read-connection failures are retried
+automatically with capped exponential backoff. `broker.ping()` returns `False`
+while any queue consumer is recovering or has stopped. Errors establishing the
+first consumer connection still propagate from startup.
+
+Acknowledgements from a disconnected consumer fail rather than running on the
+replacement connection. Unacknowledged tasks may be redelivered, so handlers
+must tolerate repeated execution.
+
 | | Read | Publish |
 |---|---|---|
 | Protocol v2 (Celery 4+) | yes | yes |
