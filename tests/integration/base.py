@@ -23,6 +23,7 @@ from faststream.exceptions import (
     SkipMessage,
 )
 from faststream.middlewares import AckPolicy
+from faststream.response import Response
 
 from faststream_celery import CeleryBroker, CeleryTask, signature
 from faststream_celery.annotations import CeleryMessage
@@ -48,6 +49,37 @@ def wait_for_log(log_file: Path, timeout: float = WORKER_TIMEOUT) -> list[Any]:
         time.sleep(0.2)
 
     return read_log(log_file)
+
+
+class ResponseTestcase:
+    """A FastStream Response is understood by a Celery client and worker."""
+
+    @pytest.mark.asyncio()
+    async def test_response_body_reaches_the_client_and_callback(
+        self,
+        broker: CeleryBroker,
+        celery_app: Celery,
+        queue: str,
+        our_queue: str,
+        celery_worker: Path,
+    ) -> None:
+        @broker.subscriber(our_queue, task="tests.response")
+        async def handler() -> Response:
+            return Response(
+                7,
+                headers={"x-result": "metadata"},
+                correlation_id="outgoing-id",
+            )
+
+        async with running(broker):
+            result = celery_app.send_task(
+                "tests.response",
+                queue=our_queue,
+                link=celery_app.signature("tests.echo", queue=queue),
+            )
+            assert await asyncio.to_thread(result.get, timeout=CONSUME_TIMEOUT) == 7
+            entries = await asyncio.to_thread(wait_for_log, celery_worker)
+            assert entries == [{"task": "tests.echo", "payload": 7}]
 
 
 class OutcomeTestcase:

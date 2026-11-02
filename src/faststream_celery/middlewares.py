@@ -6,7 +6,7 @@ from faststream.exceptions import HandlerException
 from faststream.message import AckStatus
 from faststream.message.source_type import SourceType
 from faststream.middlewares import AckPolicy, BaseMiddleware
-from faststream.response import PublishType
+from faststream.response import PublishType, ensure_response
 from typing_extensions import override
 
 from faststream_celery._internal import get_ack_policy
@@ -80,8 +80,9 @@ class CeleryResultMiddleware(BaseMiddleware[CeleryPublishCommand, ConsumerMessag
             raise
 
         if self.should_report_outcome(msg, failed=False):
-            await self._report(msg, build_success(task_id, result), reply=False)
-            await self._canvas.on_success(msg, embed, result)
+            body = ensure_response(result).body
+            await self._report(msg, build_success(task_id, body), reply=False)
+            await self._canvas.on_success(msg, embed, body)
         return result
 
     def should_report_outcome(self, msg: "StreamMessage[Any]", *, failed: bool) -> bool:

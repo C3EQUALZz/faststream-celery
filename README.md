@@ -105,6 +105,11 @@ reads `celery-task-meta-<id>`, exactly as `AsyncResult.get()` does.
 such as `STARTED`, `RETRY` and custom progress states keep waiting within the
 same timeout. A failure or revocation is returned as its Celery result envelope.
 
+Handlers may return a FastStream `Response`: its body becomes the Celery result
+and the value passed to callbacks and chain steps. Its headers and correlation
+ID remain available to ordinary FastStream publishers; Celery results keep the
+incoming task ID.
+
 RPC replies are acknowledged before their connection closes. Returned results
 have no delivery to settle: their `ack()`, `nack()` and `reject()` methods only
 update local message state and cannot requeue the completed task.

@@ -60,6 +60,11 @@ consumer to serve every task routed to it. See ADR-0003.
 - **Redis result backend** (`celery-task-meta-<id>`) — as a worker (we write
   status/result) and as a client (we read).
 
+For FastStream `Response` returns, result reporting and canvas use the body
+normalized through FastStream's public `ensure_response()`. The middleware
+returns the original value to FastStream so ordinary publishers retain response
+headers and correlation ID. Result envelopes remain keyed by the incoming task ID.
+
 ### 6. Ack and retry — the FastStream way
 
 No Celery-specific defaults. The stock `AckPolicy`
