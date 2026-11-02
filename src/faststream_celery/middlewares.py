@@ -23,7 +23,9 @@ if TYPE_CHECKING:
     from faststream_celery.configs import CeleryBrokerConfig
 
 
-class CeleryResultMiddleware(BaseMiddleware[CeleryPublishCommand, ConsumerMessage]):
+class CeleryResultMiddleware(
+    BaseMiddleware[CeleryPublishCommand, ConsumerMessage | None],
+):
     """Reports what a handler did back to whoever sent the task.
 
     Two channels, and a task may use either or both:

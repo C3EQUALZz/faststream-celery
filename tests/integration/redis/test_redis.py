@@ -24,6 +24,7 @@ from tests.integration.base import (
     TransportTestcase,
     wait_for,
 )
+from tests.integration.routing import RoutingTestcase
 
 if TYPE_CHECKING:
     import redis
@@ -146,7 +147,12 @@ class TestRedisSpecifics:
         assert received == [[7, 8]]
 
 
-class TestResultBackend(RequestTestcase, OutcomeTestcase, ResponseTestcase):
+class TestResultBackend(
+    RequestTestcase,
+    OutcomeTestcase,
+    ResponseTestcase,
+    RoutingTestcase,
+):
     """`celery-task-meta-<id>` in both directions (ticket-4)."""
 
     @pytest.fixture()

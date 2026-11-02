@@ -20,6 +20,7 @@ from kombu import Message
 from typing_extensions import overload, override
 
 from faststream_celery._internal import (
+    CallsCollection,
     DefaultCodec,
     EnterType,
     ParserComposition,
@@ -33,7 +34,7 @@ from faststream_celery.broker import CeleryBroker
 from faststream_celery.configs import CeleryBrokerConfig
 from faststream_celery.exceptions import DECODE_ERRORS
 from faststream_celery.message import ConsumerMessage
-from faststream_celery.parser import CeleryParser, read_headers
+from faststream_celery.parser import CeleryParser
 from faststream_celery.publisher.producer import (
     DEFAULT_REQUEST_TIMEOUT,
     CeleryFastProducer,
@@ -47,6 +48,7 @@ from faststream_celery.schemas.task import (
     build_task_envelope,
 )
 from faststream_celery.subscriber import CelerySubscriber
+from faststream_celery.subscriber.consumer import select_subscriber
 from faststream_celery.types import MutableHeaders
 
 if TYPE_CHECKING:
@@ -213,20 +215,17 @@ class FakeProducer(CeleryFastProducer):
                     pending.future.set_result(ConsumerMessage(incoming.message))
             return
 
+        handler = self.find_handler(cmd, incoming)
         if cmd.publish_type is PublishType.REQUEST:
-            handler = next(self._find_handlers(cmd, incoming), None)
             if handler is not None:
                 task = asyncio.create_task(handler.consume(incoming))
                 self._request_tasks.add(task)
                 task.add_done_callback(self._request_tasks.discard)
             return
 
-        called = False
-        for handler in self._find_handlers(cmd, incoming):
-            called = True
+        if handler is not None:
             await self._execute_handler(incoming, handler)
-
-        if not called and cmd.publish_type is not PublishType.REPLY:
+        elif cmd.publish_type is not PublishType.REPLY:
             # A reply queue belongs to the (absent) client, so an unconsumed
             # reply is expected; an unconsumed task is a user mistake.
             raise SubscriberNotFound
@@ -266,23 +265,18 @@ class FakeProducer(CeleryFastProducer):
             codec=self.codec,
         )
 
-    def _find_handlers(
+    def find_handler(
         self,
         cmd: CeleryPublishCommand,
         incoming: ConsumerMessage,
-    ) -> Iterator[CelerySubscriber]:
-        """Subscribers on ``cmd.queue`` whose ``task=`` filter lets this through."""
-        task_name = read_headers(incoming.message).get("task")
-
-        for handler in self.subscribers:
-            if handler.queue != cmd.queue:
-                continue
-
-            expected_task = handler.config.task
-            if expected_task is not None and expected_task != task_name:
-                continue
-
-            yield handler
+    ) -> CelerySubscriber | None:
+        """Choose one claimant from the handlers registered for this queue."""
+        handlers = (
+            handler
+            for handler in self.subscribers
+            if handler.queue == cmd.queue and handler.calls
+        )
+        return select_subscriber(handlers, incoming)
 
     async def _execute_handler(
         self,
@@ -386,9 +380,18 @@ class TestCeleryBroker(TestBroker[CeleryBroker, EnterType]):
         broker: CeleryBroker,
         publisher: "CeleryPublisher",
     ) -> tuple[CelerySubscriber, bool]:
-        for handler in (s for b in self.brokers for s in b.subscribers):
+        subscribers: list[CelerySubscriber] = []
+        for handler in (s for owner in self.brokers for s in owner.subscribers):
             subscriber = cast("CelerySubscriber", handler)
-            if subscriber.queue == publisher.queue:
-                return subscriber, True
+            if subscriber.queue == publisher.queue and subscriber.calls:
+                subscribers.append(subscriber)
+        if subscribers:
+            # The hook accepts one endpoint; a queue can have several task handlers.
+            # Copy the endpoint so collecting their calls leaves real routing intact.
+            subscriber = copy(subscribers[0])
+            subscriber.calls = CallsCollection(
+                call for candidate in subscribers for call in candidate.calls
+            )
+            return subscriber, True
 
         return broker.subscriber(queue=publisher.queue, persistent=False), False

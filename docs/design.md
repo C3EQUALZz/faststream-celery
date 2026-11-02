@@ -45,8 +45,10 @@ reading and writing (`read_connection` / `write_connection`).
 
 `@broker.subscriber(queue="celery", task="proj.tasks.send_email")` — filtering
 on `headers["task"]` via the stock FastStream filter mechanism. The `task`
-parameter is optional: without it, the handler accepts everything in the queue.
-The fate of filtered-out messages follows the stock FastStream filter rules.
+parameter is optional: without it, the handler is the fallback for this queue.
+Exact task matches take precedence; one subscriber receives each message.
+Production and fake delivery share the selection rule. A selected subscriber's
+custom filter follows the stock FastStream rules without retrying the fallback.
 
 The task-name filter dispatches within this application; it does not route
 between competing worker processes. During migration, use separate queues and
@@ -154,7 +156,7 @@ breaking the API).
 
 ### 12. Dependencies and versioning
 
-- `faststream>=0.7.5` — a custom broker inherits from the private
+- `faststream>=0.7.8` — a custom broker inherits from the private
   `faststream._internal` API; the dependency on it is isolated in a single
   adapter module of the project.
 - `kombu>=5.3,<6` — a public, stable API.
@@ -215,18 +217,17 @@ Public exports: `from faststream_celery import CeleryBroker, CeleryRouter, TestC
 AsyncAPI specifications: minimal `SubscriberSpecification`/
 `PublisherSpecification` subclasses (queue/exchange/routing key) — required
 for `faststream docs`. The channel label identifies the documented endpoint;
-the channel address is its routing key. The adapter passes that address to
-FastStream releases whose channel spec models require it while preserving the
-minimum supported 0.7.5 release.
+the channel address is its routing key, passed directly to FastStream's
+`SubscriberSpec` and `PublisherSpec` models.
 
 ## Risks
 
-| Risk | Mitigation |
-|---|---|
-| Private `faststream._internal` breaks between releases | Minimum/latest release nox matrix, adapter module |
-| Chord — complex coordination via the result backend | A dedicated implementation stage |
+| Risk                                                      | Mitigation                                         |
+|-----------------------------------------------------------|----------------------------------------------------|
+| Private `faststream._internal` breaks between releases    | Minimum/latest release nox matrix, adapter module  |
+| Chord — complex coordination via the result backend       | A dedicated implementation stage                   |
 | Redis virtual transport (`unacked`, `visibility_timeout`) | Integration tests against live Celery from day one |
-| Client and worker `visibility_timeout` must match | Document; `transport_options` are passed through |
+| Client and worker `visibility_timeout` must match         | Document; `transport_options` are passed through   |
 
 ## Roadmap (beyond the first release)
 

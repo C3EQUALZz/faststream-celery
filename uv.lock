@@ -917,16 +917,16 @@ wheels = [
 
 [[package]]
 name = "faststream"
-version = "0.7.7"
+version = "0.7.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "fast-depends", extra = ["pydantic"] },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6f/73/d07717b874cdc039b15e6f44b8629d8b00b7abc150167bf8f30132a17d82/faststream-0.7.7.tar.gz", hash = "sha256:dfba491c665f1b962f7c1262496201340bec8711f7d19a786f13cb1e9e2a5bdd", size = 377284, upload-time = "2026-09-23T20:36:14.055Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/87/b6/d15b1c88f1adc3bf11e4e23f8a057e489e2e60a47f7d4b821a3ae264f4c2/faststream-0.7.8.tar.gz", hash = "sha256:9e367d9ba8b59eeafad19f46641b11f20d23a7ed75ea27b2503856a8ae0c075a", size = 392145, upload-time = "2026-10-22T20:50:29.387Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/eb/dc9e1702cafa904bd06e0f9438baaf4563dcd6e07e9036f08352d2687180/faststream-0.7.7-py3-none-any.whl", hash = "sha256:f15f1c2f389d218e5e9b2d2e22286155faffed20f7e16be8d26ccf5e9f1dd0ce", size = 601362, upload-time = "2026-09-23T20:36:12.222Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/79/daae6f842665756f5fa45683d4762333348c4ad4dba2e9d9f37644717d74/faststream-0.7.8-py3-none-any.whl", hash = "sha256:ffe412278cf116216078dcf29dcec93274994a98d036be2bc388071dff7e259e", size = 618852, upload-time = "2026-10-22T20:50:27.388Z" },
 ]
 
 [package.optional-dependencies]
@@ -947,7 +947,7 @@ dependencies = [
 
 [package.optional-dependencies]
 fastapi = [
-    { name = "faststream" },
+    { name = "fastapi" },
 ]
 otel = [
     { name = "faststream", extra = ["otel"] },
@@ -1008,10 +1008,10 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "faststream", specifier = ">=0.7.5" },
-    { name = "faststream", extras = ["fastapi"], marker = "extra == 'fastapi'", specifier = ">=0.7.5" },
-    { name = "faststream", extras = ["otel"], marker = "extra == 'otel'", specifier = ">=0.7.5" },
-    { name = "faststream", extras = ["prometheus"], marker = "extra == 'prometheus'", specifier = ">=0.7.5" },
+    { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.100.0" },
+    { name = "faststream", specifier = ">=0.7.8" },
+    { name = "faststream", extras = ["otel"], marker = "extra == 'otel'", specifier = ">=0.7.8" },
+    { name = "faststream", extras = ["prometheus"], marker = "extra == 'prometheus'", specifier = ">=0.7.8" },
     { name = "kombu", specifier = ">=5.3,<6" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0.0" },
 ]

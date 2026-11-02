@@ -17,6 +17,7 @@ from tests.integration.base import (
     ResponseTestcase,
     TransportTestcase,
 )
+from tests.integration.routing import RoutingTestcase
 
 pytestmark = [pytest.mark.connected(), pytest.mark.rabbit(), pytest.mark.slow()]
 
@@ -25,7 +26,7 @@ class TestRabbitTransport(TransportTestcase):
     """Every transport behaviour, over RabbitMQ."""
 
 
-class TestAmqpRpc(RequestTestcase, OutcomeTestcase, ResponseTestcase):
+class TestAmqpRpc(RequestTestcase, OutcomeTestcase, ResponseTestcase, RoutingTestcase):
     """Task results over AMQP RPC — `reply_to` plus `correlation_id`."""
 
     @pytest.mark.asyncio()

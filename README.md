@@ -61,8 +61,11 @@ async def resize(args: list, kwargs: dict) -> None: ...
 async def fallback(args: list, kwargs: dict) -> None: ...
 ```
 
-Leave `task=` off and the handler takes every task on the queue. A task nobody
-claims is rejected, the way a Celery worker rejects one it does not know.
+For each message, an exact `task=` match takes precedence over the fallback
+without `task=`. Only one subscriber receives the message, in both production
+and `TestCeleryBroker`. A custom filter rejecting the selected exact subscriber
+does not retry the fallback. A task nobody claims is rejected, the way a Celery
+worker rejects one it does not know.
 
 Returning a value is enough to answer the caller: with an AMQP `reply_to` or a
 result backend configured, `AsyncResult.get()` on the client side returns it. A

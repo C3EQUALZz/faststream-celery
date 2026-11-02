@@ -9,9 +9,9 @@ subscriber whose ``task=`` claims it.
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from faststream.exceptions import IncorrectState
 from faststream.message import AckStatus
@@ -41,6 +41,25 @@ class QueueSubscriber(Protocol):
         ...
 
 
+SubscriberT = TypeVar("SubscriberT", bound=QueueSubscriber)
+
+
+def select_subscriber(
+    subscribers: Iterable[SubscriberT],
+    msg: ConsumerMessage,
+) -> SubscriberT | None:
+    """Select one exact task match, otherwise the first fallback."""
+    name = task_name(msg)
+    fallback: SubscriberT | None = None
+    for subscriber in subscribers:
+        task = subscriber.task
+        if task == name:
+            return subscriber
+        if task is None and fallback is None:
+            fallback = subscriber
+    return fallback
+
+
 class SharedConsumer:
     """The single kombu consumer standing behind one queue."""
 
@@ -52,7 +71,7 @@ class SharedConsumer:
         self._reader: asyncio.Task[None] | None = None
 
     def register(self, subscriber: QueueSubscriber) -> None:
-        """Add a subscriber to the fan-out."""
+        """Register a candidate subscriber for this queue."""
         if subscriber not in self._subscribers:
             self._subscribers.append(subscriber)
 
@@ -109,22 +128,13 @@ class SharedConsumer:
                 )
 
     async def _route(self, msg: ConsumerMessage) -> None:
-        subscriber = self._claimant(msg)
+        subscriber = select_subscriber(self._subscribers, msg)
 
         if subscriber is None:
             await self._drop(msg)
             return
 
         await subscriber.dispatch(msg)
-
-    def _claimant(self, msg: ConsumerMessage) -> QueueSubscriber | None:
-        task_name = _task_name(msg)
-
-        for subscriber in self._subscribers:
-            if subscriber.task == task_name:
-                return subscriber
-
-        return next((s for s in self._subscribers if s.task is None), None)
 
     async def _drop(self, msg: ConsumerMessage) -> None:
         """Reject a task no subscriber claims.
@@ -190,7 +200,7 @@ class ConsumerRegistry:
             del self._consumers[queue]
 
 
-def _task_name(msg: ConsumerMessage) -> str | None:
+def task_name(msg: ConsumerMessage) -> str | None:
     try:
         name = read_headers(msg.message).get("task")
     except DECODE_ERRORS:
