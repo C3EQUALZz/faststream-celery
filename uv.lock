@@ -947,7 +947,7 @@ dependencies = [
 
 [package.optional-dependencies]
 fastapi = [
-    { name = "faststream" },
+    { name = "fastapi" },
 ]
 otel = [
     { name = "faststream", extra = ["otel"] },
@@ -1008,10 +1008,10 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "faststream", specifier = ">=0.7.5" },
-    { name = "faststream", extras = ["fastapi"], marker = "extra == 'fastapi'", specifier = ">=0.7.5" },
-    { name = "faststream", extras = ["otel"], marker = "extra == 'otel'", specifier = ">=0.7.5" },
-    { name = "faststream", extras = ["prometheus"], marker = "extra == 'prometheus'", specifier = ">=0.7.5" },
+    { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.100.0" },
+    { name = "faststream", specifier = ">=0.7.8" },
+    { name = "faststream", extras = ["otel"], marker = "extra == 'otel'", specifier = ">=0.7.8" },
+    { name = "faststream", extras = ["prometheus"], marker = "extra == 'prometheus'", specifier = ">=0.7.8" },
     { name = "kombu", specifier = ">=5.3,<6" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0.0" },
 ]

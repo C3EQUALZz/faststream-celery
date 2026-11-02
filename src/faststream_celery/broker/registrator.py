@@ -55,7 +55,8 @@ class CeleryRegistrator(Registrator[ConsumerMessage, CeleryBrokerConfig]):
         Args:
             queue: Celery queue name to consume tasks from.
             task: Celery task name (`headers["task"]`) to filter messages by.
-                Without it, the handler accepts every task in the queue.
+                Without it, handles messages not claimed by an exact task
+                subscriber on this queue.
             prefetch_count: kombu QoS prefetch count (broker connection-level
                 `prefetch_count` or `max_workers` by default).
             ack_policy: Acknowledgement policy for message processing.

@@ -8,14 +8,26 @@ belongs in that transport's module instead.
 
 import asyncio
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 import pytest
 from celery import Celery
+from celery.exceptions import TimeoutError as CeleryTimeoutError
+from faststream.exceptions import (
+    AckMessage,
+    IncorrectState,
+    NackMessage,
+    RejectMessage,
+    SkipMessage,
+)
+from faststream.middlewares import AckPolicy
+from faststream.response import Response
 
-from faststream_celery import CeleryBroker, CeleryTask, signature
-from tests.helpers import running
+from faststream_celery import CeleryBroker, CeleryTask, TestCeleryBroker, signature
+from faststream_celery.annotations import CeleryMessage
+from tests.helpers import ConnectionFaults, running
 
 from .celery_tasks import read_log
 
@@ -39,8 +51,306 @@ def wait_for_log(log_file: Path, timeout: float = WORKER_TIMEOUT) -> list[Any]:
     return read_log(log_file)
 
 
+class ResponseTestcase:
+    """A FastStream Response is understood by a Celery client and worker."""
+
+    @pytest.mark.asyncio()
+    async def test_response_body_reaches_the_client_and_callback(
+        self,
+        broker: CeleryBroker,
+        celery_app: Celery,
+        queue: str,
+        our_queue: str,
+        celery_worker: Path,
+    ) -> None:
+        @broker.subscriber(our_queue, task="tests.response")
+        async def handler() -> Response:
+            return Response(
+                7,
+                headers={"x-result": "metadata"},
+                correlation_id="outgoing-id",
+            )
+
+        async with running(broker):
+            result = celery_app.send_task(
+                "tests.response",
+                queue=our_queue,
+                link=celery_app.signature("tests.echo", queue=queue),
+            )
+            assert await asyncio.to_thread(result.get, timeout=CONSUME_TIMEOUT) == 7
+            entries = await asyncio.to_thread(wait_for_log, celery_worker)
+            assert entries == [{"task": "tests.echo", "payload": 7}]
+
+
+class OutcomeTestcase:
+    """Delivery control leaves a real Celery client's result unfinished."""
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("mode", ("nack_exception", "nack_on_error", "manual_nack"))
+    async def test_redelivery_has_no_terminal_outcome_until_success(
+        self,
+        broker: CeleryBroker,
+        celery_app: Celery,
+        queue: str,
+        mode: str,
+    ) -> None:
+        policy = AckPolicy.MANUAL if mode == "manual_nack" else AckPolicy.NACK_ON_ERROR
+        retry_started = asyncio.Event()
+        release = asyncio.Event()
+        attempts = 0
+
+        @broker.subscriber(queue, task="tests.outcome", ack_policy=policy)
+        async def handler(message: CeleryMessage) -> int:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                if mode == "nack_exception":
+                    raise NackMessage
+                if mode == "nack_on_error":
+                    error = "temporary failure"
+                    raise ValueError(error)
+                await message.nack()
+                return -1
+            retry_started.set()
+            await release.wait()
+            await message.ack()
+            return 7
+
+        async with running(broker):
+            result = celery_app.send_task("tests.outcome", queue=queue)
+            try:
+                await wait_for(retry_started)
+                with pytest.raises(CeleryTimeoutError):
+                    await asyncio.to_thread(result.get, timeout=0.3)
+                release.set()
+                assert await asyncio.to_thread(result.get, timeout=CONSUME_TIMEOUT) == 7
+                assert attempts == 2
+            finally:
+                release.set()
+                with suppress(NotImplementedError):
+                    await asyncio.to_thread(result.forget)
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("instruction", ("ack", "reject", "skip", "manual_reject"))
+    async def test_control_disposition_creates_no_task_outcome(
+        self,
+        broker: CeleryBroker,
+        celery_app: Celery,
+        queue: str,
+        instruction: str,
+    ) -> None:
+        processed = asyncio.Event()
+        exceptions = {"ack": AckMessage, "reject": RejectMessage, "skip": SkipMessage}
+
+        @broker.subscriber(queue, task="tests.control")
+        async def handler(message: CeleryMessage) -> int:
+            if instruction == "manual_reject":
+                await message.reject()
+                return -1
+            raise exceptions[instruction]
+
+        @broker.subscriber(queue, task="tests.probe")
+        async def probe() -> None:
+            processed.set()
+
+        async with running(broker):
+            result = celery_app.send_task("tests.control", queue=queue)
+            try:
+                celery_app.send_task("tests.probe", queue=queue, ignore_result=True)
+                await wait_for(processed)
+                with pytest.raises(CeleryTimeoutError):
+                    await asyncio.to_thread(result.get, timeout=0.3)
+            finally:
+                with suppress(NotImplementedError):
+                    await asyncio.to_thread(result.forget)
+
+
+class RequestTestcase:
+    """Terminal result waiting with a real Celery worker on either backend."""
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("fake", (False, True))
+    @pytest.mark.parametrize("fail", (False, True))
+    async def test_request_outcome_matches_in_fake_and_live_modes(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        fake: bool,
+        fail: bool,
+    ) -> None:
+        @broker.subscriber(queue, task="tests.outcome")
+        async def handler() -> Response:
+            if fail:
+                error = "request failed"
+                raise ValueError(error)
+            return Response(7, correlation_id="outgoing-id")
+
+        context = TestCeleryBroker(broker) if fake else running(broker)
+        async with context:
+            response = await broker.request(
+                CeleryTask("tests.outcome"),
+                queue=queue,
+                correlation_id=f"{queue}-result",
+                timeout=CONSUME_TIMEOUT,
+            )
+            envelope = await response.decode()
+            assert isinstance(envelope, dict)
+            assert envelope["task_id"] == response.correlation_id == f"{queue}-result"
+            assert envelope["status"] == ("FAILURE" if fail else "SUCCESS")
+            if fail:
+                assert envelope["result"]["exc_type"] == "ValueError"
+                assert envelope["result"]["exc_message"] == ["request failed"]
+            else:
+                assert envelope["result"] == 7
+            assert response.raw_message.acknowledgement is None
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("operation", ("ack", "nack", "reject"))
+    @pytest.mark.usefixtures("celery_worker")
+    async def test_request_result_is_detached_from_transport_settlement(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        operation: str,
+    ) -> None:
+        async with running(broker):
+            response = await broker.request(
+                CeleryTask("tests.add", args=[2, 3]),
+                queue=queue,
+                timeout=WORKER_TIMEOUT,
+            )
+            assert response.kombu_message.channel is None
+            assert response.raw_message.acknowledgement is None
+            await getattr(response, operation)()
+            envelope = await response.decode()
+            assert isinstance(envelope, dict)
+            assert envelope["status"] == "SUCCESS"
+            assert envelope["result"] == 5
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("fail", (False, True))
+    @pytest.mark.usefixtures("celery_worker")
+    async def test_request_waits_through_worker_progress_and_retry(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        fail: bool,
+    ) -> None:
+        async with running(broker):
+            response = await broker.request(
+                CeleryTask("tests.progress", kwargs={"fail": fail}),
+                queue=queue,
+                correlation_id=f"{queue}-result",
+                timeout=WORKER_TIMEOUT,
+            )
+            envelope = await response.decode()
+
+        assert isinstance(envelope, dict)
+        assert envelope["task_id"] == f"{queue}-result"
+        if fail:
+            assert envelope["status"] == "FAILURE"
+            assert envelope["result"]["exc_type"] == "ValueError"
+            assert envelope["result"]["exc_message"] == ["failure after retry"]
+        else:
+            assert envelope["status"] == "SUCCESS"
+            assert envelope["result"] == 7
+
+    @pytest.mark.asyncio()
+    @pytest.mark.usefixtures("celery_worker")
+    async def test_request_times_out_while_the_worker_is_retrying(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+    ) -> None:
+        async with running(broker):
+            with pytest.raises(TimeoutError, match=r"No Celery (reply|result)"):
+                await asyncio.wait_for(
+                    broker.request(
+                        CeleryTask("tests.progress", kwargs={"retry_delay": 5}),
+                        queue=queue,
+                        timeout=0.3,
+                    ),
+                    timeout=2,
+                )
+
+
 class TransportTestcase:
     """Wire compatibility with a live Celery, on one kombu transport."""
+
+    @pytest.mark.asyncio()
+    async def test_consumer_recovers_after_connection_loss(
+        self,
+        broker: CeleryBroker,
+        celery_app: Celery,
+        queue: str,
+        event: asyncio.Event,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Celery tasks resume after closing the read connection on its thread."""
+        faults = ConnectionFaults(broker.config.broker_config.url)
+        monkeypatch.setattr(broker.config.broker_config, "make_connection", faults)
+        received: list[int] = []
+
+        @broker.subscriber(queue, task="tests.add", ack_policy=AckPolicy.MANUAL)
+        async def handler(
+            args: list[int],
+            kwargs: dict[str, Any],
+            message: CeleryMessage,
+        ) -> None:
+            await message.ack()
+            received.append(args[0])
+            event.set()
+
+        async with running(broker):
+            celery_app.send_task("tests.add", args=[1], queue=queue, ignore_result=True)
+            await wait_for(event)
+            event.clear()
+
+            faults.unavailable.set()
+            faults.disconnect.set()
+            try:
+                assert await asyncio.to_thread(
+                    faults.unavailable_attempted.wait,
+                    timeout=CONSUME_TIMEOUT,
+                )
+                assert not await broker.ping()
+            finally:
+                faults.unavailable.clear()
+
+            celery_app.send_task("tests.add", args=[2], queue=queue, ignore_result=True)
+            await wait_for(event)
+            assert await broker.ping()
+
+        assert received == [1, 2]
+
+    @pytest.mark.asyncio()
+    async def test_unacked_task_is_redelivered_after_recovery(
+        self,
+        broker: CeleryBroker,
+        celery_app: Celery,
+        queue: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Old acks fail; the broker's redelivery belongs to the new channel."""
+        faults = ConnectionFaults(broker.config.broker_config.url)
+        monkeypatch.setattr(broker.config.broker_config, "make_connection", faults)
+        subscriber = broker.subscriber(queue)
+        async with running(broker):
+            celery_app.send_task("tests.add", args=[7], queue=queue, ignore_result=True)
+            old = await subscriber.get_one(timeout=CONSUME_TIMEOUT)
+            assert old is not None
+
+            faults.disconnect.set()
+            redelivered = await subscriber.get_one(timeout=CONSUME_TIMEOUT)
+            assert redelivered is not None
+            assert redelivered.message_id == old.message_id
+            assert await redelivered.decode() == {"args": [7], "kwargs": {}}
+
+            with pytest.raises(IncorrectState, match="closed"):
+                await old.ack()
+            assert old.committed is None
+            await redelivered.ack()
+            assert await broker.ping()
 
     @pytest.mark.asyncio()
     async def test_celery_client_reaches_our_subscriber(

@@ -15,10 +15,14 @@ Our FastStream application consumes tasks sent by Celery clients and executes th
 _Avoid_: consumer side, receiver
 
 **Migration**:
-The gradual-transition mode in which a FastStream application and Celery workers listen to the same queues simultaneously. The primary scenario this project exists for.
+The gradual-transition mode in which FastStream applications and Celery workers coexist on the same messaging infrastructure while tasks move between them. The primary scenario this project exists for.
 _Avoid_: rewrite, replacement
 
 ### Protocol
+
+**Wire compatibility**:
+The ability of FastStream applications and Celery clients/workers to exchange task envelopes and result envelopes understood by both sides. It does not imply identical execution semantics or worker management capabilities.
+_Avoid_: full Celery replacement
 
 **Task**:
 A named unit of Celery work. Routed by the name in `headers["task"]`, not by queue: one queue mixes tasks with different names.
@@ -52,6 +56,18 @@ _Avoid_: delay, timeout
 
 ### Results
 
+**Delivery disposition**:
+The decision to acknowledge, requeue or reject a received task message. It is separate from the task's outcome.
+_Avoid_: task status, task completion
+
+**Task outcome**:
+The final success, failure or revocation of a task, communicated to the client and used to complete its workflow. A delivery disposition alone does not establish an outcome.
+_Avoid_: acknowledgement, delivery status
+
+**Redelivery**:
+Another delivery of the same task message for a new processing attempt. It does not imply a Celery retry with a changed retry count or schedule.
+_Avoid_: Celery retry
+
 **AMQP RPC**:
 Getting a result via `reply_to` + `correlation_id` (a temporary reply queue). Maps onto FastStream's stock `broker.request()`.
 _Avoid_: RPC backend, reply queue
@@ -73,3 +89,7 @@ _Avoid_: pipeline, sequence
 **Chord**:
 Fan-in: a callback that runs after every task of a group completes, receiving their results. Requires coordination through the result backend (an atomic group counter).
 _Avoid_: barrier, join
+
+**Mixed canvas**:
+A Celery canvas whose tasks are executed by both FastStream applications and Celery workers. Continuations and results preserve the relationships between those tasks across executors.
+_Avoid_: hybrid pipeline

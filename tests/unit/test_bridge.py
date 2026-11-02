@@ -9,16 +9,19 @@ import json
 import time
 from collections.abc import Callable
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from faststream.exceptions import IncorrectState
+from faststream.message import AckStatus
 from kombu import Connection, Exchange, Producer, Queue
 
+from faststream_celery import CeleryBroker
 from faststream_celery.subscriber.bridge import (
     SETTLE_DRAIN_TIMEOUT,
     ConsumerBridge,
 )
-from tests.helpers import MEMORY_URL
+from tests.helpers import MEMORY_URL, ConnectionFaults, running
 
 DRAIN_TIMEOUT = 0.05
 GET_TIMEOUT = 5.0
@@ -128,7 +131,7 @@ class TestMessageFlow:
         for _ in range(3):
             msg = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
             received.append(msg.message.headers["id"])
-            await msg.executor(msg.message.ack)
+            await msg.settle(AckStatus.ACKED)
 
         assert received == ["0", "1", "2"]
 
@@ -146,7 +149,7 @@ class TestMessageFlow:
         publish(queue, [[], {}, {}], headers={"task": "t", "id": "1"})
         msg = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
 
-        await msg.executor(msg.message.ack)
+        await msg.settle(AckStatus.ACKED)
 
         assert msg.message.acknowledged
 
@@ -162,11 +165,11 @@ class TestMessageFlow:
 
         publish(queue, [[], {}, {}], headers={"task": "t", "id": "1"})
         msg = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
-        await msg.executor(msg.message.ack)
+        await msg.settle(AckStatus.ACKED)
 
         # Acking twice is a kombu MessageStateError, raised on the thread.
         with pytest.raises(Exception, match="already acknowledged"):
-            await msg.executor(msg.message.ack)
+            await msg.settle(AckStatus.ACKED)
 
         await bridge.stop()
 
@@ -199,7 +202,7 @@ class TestSettleLatency:
 
         assert bridge._next_timeout() == min(DRAIN_TIMEOUT, SETTLE_DRAIN_TIMEOUT)
 
-        await msg.executor(msg.message.ack)
+        await msg.settle(AckStatus.ACKED)
 
         assert bridge._next_timeout() == DRAIN_TIMEOUT
 
@@ -234,33 +237,12 @@ class TestSettleLatency:
         started = time.monotonic()
         for _ in range(total):
             msg = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
-            await msg.executor(msg.message.ack)
+            await msg.settle(AckStatus.ACKED)
         elapsed = time.monotonic() - started
 
         assert elapsed < total * slow_drain
 
         await bridge.stop()
-
-
-class TestAckExecutor:
-    @pytest.mark.asyncio()
-    async def test_execute_before_start_is_rejected(
-        self,
-        bridge: ConsumerBridge,
-    ) -> None:
-        with pytest.raises(IncorrectState, match="not running"):
-            await bridge.execute(lambda: None)
-
-    @pytest.mark.asyncio()
-    async def test_execute_after_stop_is_rejected(
-        self,
-        bridge: ConsumerBridge,
-    ) -> None:
-        await bridge.start()
-        await bridge.stop()
-
-        with pytest.raises(IncorrectState, match="not running"):
-            await bridge.execute(lambda: None)
 
 
 class TestPrefetch:
@@ -323,6 +305,252 @@ class TestPayloads:
         assert msg.message.content_type == "application/x-unknown"
 
         await bridge.stop()
+
+
+class TestRecovery:
+    @pytest.mark.asyncio()
+    async def test_messages_resume_after_a_connection_loss(self, queue: str) -> None:
+        faults = ConnectionFaults(MEMORY_URL)
+        bridge = _faulty_bridge(faults, queue)
+        await bridge.start()
+        try:
+            publish(queue, "before")
+            first = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
+            await first.settle(AckStatus.ACKED)
+
+            faults.unavailable.set()
+            faults.disconnect.set()
+            await _until(lambda: len(faults.connections) >= 2)
+            assert not bridge.is_alive
+
+            faults.unavailable.clear()
+            publish(queue, "after")
+            recovered = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
+            assert recovered.message.decode() == "after"
+            await recovered.settle(AckStatus.ACKED)
+            assert bridge.is_alive
+        finally:
+            faults.unavailable.clear()
+            await bridge.stop()
+
+    @pytest.mark.asyncio()
+    async def test_old_messages_cannot_ack_on_a_recovered_connection(
+        self,
+        queue: str,
+    ) -> None:
+        faults = ConnectionFaults(MEMORY_URL)
+        bridge = _faulty_bridge(faults, queue)
+        await bridge.start()
+        try:
+            publish(queue, "old")
+            old = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
+            faults.disconnect.set()
+            await _until(lambda: len(faults.connections) >= 2 and bridge.is_alive)
+
+            with pytest.raises(IncorrectState, match="closed"):
+                await asyncio.wait_for(old.settle(AckStatus.ACKED), timeout=GET_TIMEOUT)
+            assert not old.message.acknowledged
+
+            publish(queue, "new")
+            new = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
+            assert new.message.channel is not old.message.channel
+            await new.settle(AckStatus.ACKED)
+        finally:
+            await bridge.stop()
+
+    @pytest.mark.asyncio()
+    async def test_queued_ack_fails_when_its_connection_is_lost(self, queue: str) -> None:
+        faults = ConnectionFaults(MEMORY_URL)
+        bridge = _faulty_bridge(faults, queue)
+        await bridge.start()
+        pending: asyncio.Future[None] | None = None
+        try:
+            publish(queue, "pending")
+            message = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
+            faults.pause.set()
+            faults.disconnect.set()
+            await _until(faults.disconnected.is_set)
+
+            pending = asyncio.ensure_future(message.settle(AckStatus.ACKED))
+            await asyncio.sleep(0)
+            faults.resume.set()
+
+            with pytest.raises(IncorrectState, match=r"closed|stopped"):
+                await asyncio.wait_for(pending, timeout=GET_TIMEOUT)
+            assert not message.message.acknowledged
+        finally:
+            faults.resume.set()
+            if pending is not None:
+                await asyncio.gather(pending, return_exceptions=True)
+            await bridge.stop()
+
+    @pytest.mark.asyncio()
+    async def test_fatal_errors_wake_waiting_readers(self, queue: str) -> None:
+        faults = ConnectionFaults(MEMORY_URL)
+        bridge = _faulty_bridge(faults, queue)
+        await bridge.start()
+        waiting = [asyncio.create_task(bridge.get()) for _ in range(2)]
+        try:
+            faults.error = ValueError("Invalid consumer configuration.")
+            faults.disconnect.set()
+            for reader in waiting:
+                with pytest.raises(IncorrectState, match="stopped") as error:
+                    await asyncio.wait_for(reader, timeout=GET_TIMEOUT)
+                assert isinstance(error.value.__cause__, ValueError)
+            with pytest.raises(IncorrectState, match="stopped"):
+                await bridge.get()
+            assert not bridge.is_alive
+
+            assert len(faults.connections) == 1
+        finally:
+            await bridge.stop()
+
+    @pytest.mark.asyncio()
+    async def test_buffered_old_deliveries_are_discarded(self, queue: str) -> None:
+        faults = ConnectionFaults(MEMORY_URL)
+        bridge = _faulty_bridge(faults, queue)
+        bridge.raise_prefetch(3)
+        await bridge.start()
+        try:
+            for body in ("first", "buffered-1", "buffered-2"):
+                publish(queue, body)
+            first = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
+            await _until(lambda: bridge._messages.qsize() == 2)
+            await first.settle(AckStatus.ACKED)
+
+            faults.disconnect.set()
+            await _until(lambda: len(faults.connections) >= 2 and bridge.is_alive)
+            publish(queue, "fresh")
+            fresh = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
+            assert fresh.message.decode() == "fresh"
+            await fresh.settle(AckStatus.ACKED)
+        finally:
+            await bridge.stop()
+
+    @pytest.mark.asyncio()
+    async def test_connection_factory_failure_reaches_start(self, queue: str) -> None:
+        failure = ValueError("Invalid connection configuration.")
+        bridge = ConsumerBridge(
+            connection_factory=MagicMock(side_effect=failure),
+            queue_name=queue,
+            accept=["json"],
+            prefetch_count=1,
+        )
+        try:
+            with pytest.raises(ValueError, match="Invalid connection"):
+                await asyncio.wait_for(bridge.start(), timeout=GET_TIMEOUT)
+            assert bridge._thread is None
+        finally:
+            # Release a startup waiter even if a broken thread exited before
+            # signalling it, so a regression cannot leak an executor thread.
+            bridge._started.set()
+            await bridge.stop()
+
+    @pytest.mark.asyncio()
+    async def test_ack_transport_failure_triggers_recovery(
+        self,
+        queue: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        faults = ConnectionFaults(MEMORY_URL)
+        bridge = _faulty_bridge(faults, queue)
+        await bridge.start()
+        try:
+            publish(queue, "old")
+            old = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
+            failure = MagicMock(side_effect=OSError("Ack connection lost."))
+            monkeypatch.setattr(old.message, "ack", failure)
+            with pytest.raises(OSError, match="Ack connection lost"):
+                await asyncio.wait_for(old.settle(AckStatus.ACKED), timeout=GET_TIMEOUT)
+
+            await _until(lambda: len(faults.connections) >= 2 and bridge.is_alive)
+            publish(queue, "new")
+            new = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
+            await new.settle(AckStatus.ACKED)
+            assert new.message.decode() == "new"
+        finally:
+            await bridge.stop()
+
+    @pytest.mark.asyncio()
+    async def test_stop_wakes_waiting_readers(self, bridge: ConsumerBridge) -> None:
+        await bridge.start()
+        waiting = [asyncio.create_task(bridge.get()) for _ in range(2)]
+        await asyncio.sleep(0)
+        await bridge.stop()
+        for reader in waiting:
+            with pytest.raises(IncorrectState, match="stopped"):
+                await asyncio.wait_for(reader, timeout=GET_TIMEOUT)
+
+    @pytest.mark.asyncio()
+    async def test_ping_reflects_read_connection_recovery(
+        self,
+        memory_broker: CeleryBroker,
+        queue: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        faults = ConnectionFaults(MEMORY_URL)
+        monkeypatch.setattr(memory_broker.config.broker_config, "make_connection", faults)
+        memory_broker.subscriber(queue)
+        async with running(memory_broker):
+            assert await memory_broker.ping()
+            faults.unavailable.set()
+            faults.disconnect.set()
+            try:
+                # One write connection, the original reader, and a failed
+                # replacement reader; the write connection stays available.
+                await _until(lambda: len(faults.connections) >= 3)
+                assert not await memory_broker.ping()
+            finally:
+                faults.unavailable.clear()
+
+            consumer = memory_broker.config.broker_config.consumers._consumers[queue]
+            await _until(lambda: consumer.bridge.is_alive)
+            assert await memory_broker.ping()
+
+    @pytest.mark.asyncio()
+    async def test_stop_interrupts_reconnect_backoff(
+        self,
+        queue: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "faststream_celery.subscriber.bridge.RECONNECT_DELAY",
+            60.0,
+            raising=False,
+        )
+        faults = ConnectionFaults(MEMORY_URL)
+        bridge = _faulty_bridge(faults, queue)
+        backoff = MagicMock(wraps=bridge._stop_event.wait)
+        monkeypatch.setattr(bridge._stop_event, "wait", backoff)
+        await bridge.start()
+        try:
+            faults.unavailable.set()
+            faults.disconnect.set()
+            await _until(lambda: backoff.called)
+            await asyncio.wait_for(bridge.stop(), timeout=1.0)
+        finally:
+            faults.unavailable.clear()
+            await bridge.stop()
+
+    @pytest.mark.asyncio()
+    async def test_a_bridge_can_restart_after_stop(self, bridge: ConsumerBridge) -> None:
+        await bridge.start()
+        await bridge.stop()
+        try:
+            await bridge.start()
+            assert bridge.is_alive
+        finally:
+            await bridge.stop()
+
+
+def _faulty_bridge(faults: ConnectionFaults, queue: str) -> ConsumerBridge:
+    return ConsumerBridge(
+        connection_factory=faults,
+        queue_name=queue,
+        accept=["json"],
+        prefetch_count=1,
+        drain_timeout=DRAIN_TIMEOUT,
+    )
 
 
 async def _until(predicate: Callable[[], bool], timeout: float = GET_TIMEOUT) -> None:

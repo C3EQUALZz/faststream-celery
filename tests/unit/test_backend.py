@@ -1,5 +1,6 @@
 """The result backend: which one a url names, and how Redis stores meta."""
 
+import asyncio
 import json
 from functools import partial
 from typing import Any, cast
@@ -18,7 +19,7 @@ from faststream_celery.backend.redis import (
     KEY_PREFIX,
     RedisResultBackend,
 )
-from faststream_celery.message import CeleryMessage, local_message, run_inline
+from faststream_celery.message import CeleryMessage, local_message
 from faststream_celery.middlewares import CeleryResultMiddleware
 from faststream_celery.schemas.constants import CONTENT_TYPE
 from faststream_celery.schemas.result import build_success
@@ -175,6 +176,35 @@ class TestRedisBackend:
             await backend.wait("task-id-1", timeout=0.05)
 
     @pytest.mark.asyncio()
+    @pytest.mark.parametrize("status", ("SUCCESS", "FAILURE", "REVOKED"))
+    async def test_wait_skips_progress_until_a_terminal_state(
+        self,
+        backend: RedisResultBackend,
+        client: MagicMock,
+        status: str,
+    ) -> None:
+        envelopes = [
+            {**build_success("task-id-1", None), "status": state}
+            for state in ("PENDING", "RECEIVED", "STARTED", "RETRY", "PROGRESS", status)
+        ]
+        client.get = AsyncMock(side_effect=[json.dumps(item) for item in envelopes])
+
+        assert await backend.wait("task-id-1", timeout=5) == envelopes[-1]
+
+    @pytest.mark.asyncio()
+    async def test_progress_does_not_complete_or_extend_the_wait(
+        self,
+        backend: RedisResultBackend,
+        client: MagicMock,
+    ) -> None:
+        client.get = AsyncMock(
+            return_value=json.dumps({"task_id": "task-id-1", "status": "PROGRESS"}),
+        )
+        with pytest.raises(TimeoutError, match="No Celery result"):
+            await asyncio.wait_for(backend.wait("task-id-1", timeout=0.05), timeout=1)
+        assert client.get.await_count > 1
+
+    @pytest.mark.asyncio()
     async def test_using_it_before_connecting_is_refused(self) -> None:
         backend = RedisResultBackend("redis://localhost")
 
@@ -319,8 +349,10 @@ class TestTheTestBrokerFakesTheBackend:
 
             response = await broker.request(CeleryTask("proj.tasks.add"), queue=queue)
 
-            # The handler's return value, not a result envelope.
-            assert await response.decode() == 3
+            envelope = await response.decode()
+            assert isinstance(envelope, dict)
+            assert envelope["status"] == "SUCCESS"
+            assert envelope["result"] == 3
 
     @pytest.mark.asyncio()
     async def test_request_reads_the_result_out_of_the_backend(
@@ -350,6 +382,46 @@ class TestTheTestBrokerFakesTheBackend:
 
 
 class TestInMemoryBackend:
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("status", ("SUCCESS", "FAILURE", "REVOKED"))
+    async def test_wait_tracks_progress_until_a_terminal_state(self, status: str) -> None:
+        backend = InMemoryResultBackend()
+        intermediate = build_success("task-id-1", None)
+        intermediate["status"] = "STARTED"
+        await backend.store("task-id-1", intermediate)
+        waiting = [
+            asyncio.create_task(backend.wait("task-id-1", timeout=REQUEST_TIMEOUT))
+            for _ in range(2)
+        ]
+        try:
+            await asyncio.sleep(0)
+            assert not any(waiter.done() for waiter in waiting)
+            intermediate["status"] = "PROGRESS"
+            await backend.store("task-id-1", intermediate)
+            await asyncio.sleep(0)
+            assert not any(waiter.done() for waiter in waiting)
+
+            terminal = build_success("task-id-1", 7)
+            terminal["status"] = status
+            await backend.store("task-id-1", terminal)
+            assert await asyncio.wait_for(
+                asyncio.gather(*waiting),
+                timeout=REQUEST_TIMEOUT,
+            ) == [terminal, terminal]
+        finally:
+            for waiter in waiting:
+                waiter.cancel()
+            await asyncio.gather(*waiting, return_exceptions=True)
+
+    @pytest.mark.asyncio()
+    async def test_intermediate_state_still_times_out(self) -> None:
+        backend = InMemoryResultBackend()
+        intermediate = build_success("task-id-1", None)
+        intermediate["status"] = "RETRY"
+        await backend.store("task-id-1", intermediate)
+        with pytest.raises(TimeoutError, match="No Celery result"):
+            await backend.wait("task-id-1", timeout=0.01)
+
     @pytest.mark.asyncio()
     async def test_a_stored_result_is_loaded_back(self) -> None:
         backend = InMemoryResultBackend()
@@ -441,7 +513,6 @@ class TestReplyMessagesAreNotResults:
                 correlation_id="task-id-1",
             ),
             body=b'{"status": "SUCCESS"}',
-            ack_executor=run_inline,
             correlation_id="task-id-1",
             source_type=SourceType.RESPONSE,
         )

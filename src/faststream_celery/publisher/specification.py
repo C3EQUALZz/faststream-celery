@@ -9,7 +9,6 @@ from typing_extensions import override
 
 from faststream_celery._internal import PublisherSpecification
 from faststream_celery.configs import CeleryBrokerConfig
-from faststream_celery.schemas.specification import channel_spec
 from faststream_celery.schemas.topology import build_topology
 
 from .config import CeleryPublisherSpecificationConfig
@@ -42,8 +41,7 @@ class CeleryPublisherSpecification(
         channel_name = self.name
 
         return {
-            channel_name: channel_spec(
-                PublisherSpec,
+            channel_name: PublisherSpec(
                 address=topology.routing_key,
                 description=self.config.description_,
                 operation=Operation(

@@ -2,11 +2,14 @@
 
 from typing import TYPE_CHECKING, Any
 
+from faststream.exceptions import HandlerException
+from faststream.message import AckStatus
 from faststream.message.source_type import SourceType
-from faststream.middlewares import BaseMiddleware
-from faststream.response import PublishType
+from faststream.middlewares import AckPolicy, BaseMiddleware
+from faststream.response import PublishType, ensure_response
 from typing_extensions import override
 
+from faststream_celery._internal import get_ack_policy
 from faststream_celery.canvas import CanvasDispatcher
 from faststream_celery.message import ConsumerMessage
 from faststream_celery.parser import read_embed
@@ -20,7 +23,9 @@ if TYPE_CHECKING:
     from faststream_celery.configs import CeleryBrokerConfig
 
 
-class CeleryResultMiddleware(BaseMiddleware[CeleryPublishCommand, ConsumerMessage]):
+class CeleryResultMiddleware(
+    BaseMiddleware[CeleryPublishCommand, ConsumerMessage | None],
+):
     """Reports what a handler did back to whoever sent the task.
 
     Two channels, and a task may use either or both:
@@ -65,16 +70,30 @@ class CeleryResultMiddleware(BaseMiddleware[CeleryPublishCommand, ConsumerMessag
         try:
             result = await call_next(msg)
 
-        # A handler may raise anything; the exception is reported to the
-        # Celery caller and then re-raised untouched.
-        except Exception as exc:
-            await self._report(msg, build_failure(task_id, exc), reply=True)
-            await self._canvas.on_failure(msg, embed, task_id)
+        except HandlerException:
+            # FastStream handles delivery instructions in its ack middleware.
+            # They carry no task outcome or canvas continuation.
             raise
 
-        await self._report(msg, build_success(task_id, result), reply=False)
-        await self._canvas.on_success(msg, embed, result)
+        except Exception as exc:
+            if self.should_report_outcome(msg, failed=True):
+                await self._report(msg, build_failure(task_id, exc), reply=True)
+                await self._canvas.on_failure(msg, embed, task_id)
+            raise
+
+        if self.should_report_outcome(msg, failed=False):
+            body = ensure_response(result).body
+            await self._report(msg, build_success(task_id, body), reply=False)
+            await self._canvas.on_success(msg, embed, body)
         return result
+
+    def should_report_outcome(self, msg: "StreamMessage[Any]", *, failed: bool) -> bool:
+        """Report completed processing, leaving requeued deliveries unfinished."""
+        if msg.committed in {AckStatus.NACKED, AckStatus.REJECTED}:
+            return False
+        if failed and msg.committed is None:
+            return get_ack_policy(self.context) is not AckPolicy.NACK_ON_ERROR
+        return True
 
     async def _report(
         self,

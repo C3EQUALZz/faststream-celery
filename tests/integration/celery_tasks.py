@@ -64,6 +64,22 @@ def fail(message: str = "boom") -> None:
     raise ValueError(message)
 
 
+@app.task(bind=True, name="tests.progress", track_started=True)
+def progress(task: Any, *, fail: bool = False, retry_delay: float = 0.3) -> int:
+    """Report progress, retry once, then return a value or fail."""
+    if task.request.retries == 0:
+        task.update_state(state="PROGRESS", meta={"step": 1})
+        raise task.retry(
+            exc=ValueError("try again"),
+            countdown=retry_delay,
+            max_retries=1,
+        )
+    if fail:
+        msg = "failure after retry"
+        raise ValueError(msg)
+    return 7
+
+
 def read_log(path: "str | os.PathLike[str]") -> list[Any]:
     """Read every payload the worker has recorded so far."""
     log_file = Path(path)

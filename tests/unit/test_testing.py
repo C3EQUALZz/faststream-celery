@@ -97,7 +97,10 @@ async def test_request_returns_handler_result(queue: str) -> None:
     async with TestCeleryBroker(broker):
         response = await broker.request(CeleryTask("proj.tasks.add"), queue=queue)
 
-        assert await response.decode() == {"result": 3}
+        envelope = await response.decode()
+        assert isinstance(envelope, dict)
+        assert envelope["status"] == "SUCCESS"
+        assert envelope["result"] == {"result": 3}
 
 
 @pytest.mark.asyncio()

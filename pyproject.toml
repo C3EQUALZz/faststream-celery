@@ -39,15 +39,15 @@ classifiers = [
 requires-python = ">=3.10"
 
 dependencies = [
-    "faststream>=0.7.5",
+    "faststream>=0.7.8",
     "kombu>=5.3,<6",
 ]
 
 [project.optional-dependencies]
 redis = ["redis>=5.0.0"]
-otel = ["faststream[otel]>=0.7.5"]
-prometheus = ["faststream[prometheus]>=0.7.5"]
-fastapi = ["faststream[fastapi]>=0.7.5"]
+otel = ["faststream[otel]>=0.7.8"]
+prometheus = ["faststream[prometheus]>=0.7.8"]
+fastapi = ["fastapi>=0.100.0"]
 
 [project.urls]
 Source = "https://github.com/C3EQUALZz/faststream-celery"

@@ -45,8 +45,15 @@ reading and writing (`read_connection` / `write_connection`).
 
 `@broker.subscriber(queue="celery", task="proj.tasks.send_email")` — filtering
 on `headers["task"]` via the stock FastStream filter mechanism. The `task`
-parameter is optional: without it, the handler accepts everything in the queue.
-The fate of filtered-out messages follows the stock FastStream filter rules.
+parameter is optional: without it, the handler is the fallback for this queue.
+Exact task matches take precedence; one subscriber receives each message.
+Production and fake delivery share the selection rule. A selected subscriber's
+custom filter follows the stock FastStream rules without retrying the fallback.
+
+The task-name filter dispatches within this application; it does not route
+between competing worker processes. During migration, use separate queues and
+`task_routes` for different executor task sets. Sharing a queue requires every
+consumer to serve every task routed to it. See ADR-0003.
 
 ### 5. Task results (full scope)
 
@@ -55,12 +62,31 @@ The fate of filtered-out messages follows the stock FastStream filter rules.
 - **Redis result backend** (`celery-task-meta-<id>`) — as a worker (we write
   status/result) and as a client (we read).
 
+For FastStream `Response` returns, result reporting and canvas use the body
+normalized through FastStream's public `ensure_response()`. The middleware
+returns the original value to FastStream so ordinary publishers retain response
+headers and correlation ID. Result envelopes remain keyed by the incoming task ID.
+
 ### 6. Ack and retry — the FastStream way
 
 No Celery-specific defaults. The stock `AckPolicy`
 (`ACK_FIRST` / `ACK` / `NACK_ON_ERROR` / `REJECT_ON_ERROR` / `MANUAL`);
 `CeleryMessage.ack()/nack()/reject()` map onto kombu acknowledgements. See
 ADR-0002.
+
+Delivery disposition and task outcome are separate (ADR-0004). The FastStream
+`HandlerException` instructions produce no result or canvas continuation.
+Explicit `nack()` / `reject()` also leave processing without an outcome, even
+when the handler returns normally. Exceptions subject to `NACK_ON_ERROR` do
+not publish terminal failure unless the delivery was already acknowledged.
+Ordinary completion after `ack()` still reports a success or failure outcome.
+
+The internal `Acknowledgement` protocol exposes `ack()` and `reject(requeue=...)`.
+In-memory messages implement them synchronously; a real delivery returns an
+awaitable tied to its owning consumer session. `CeleryMessage` commits its state
+after settlement succeeds and serializes concurrent settlement calls. Backend
+results and RPC snapshots have no delivery controller; RPC settlement finishes
+on the connection's thread before returning the snapshot.
 
 The broker has no retry API (like every other FastStream broker): redelivery is
 expressed via `AckPolicy` / `message.nack()`, and scenario-level retries via a
@@ -130,7 +156,7 @@ breaking the API).
 
 ### 12. Dependencies and versioning
 
-- `faststream>=0.7.5` — a custom broker inherits from the private
+- `faststream>=0.7.8` — a custom broker inherits from the private
   `faststream._internal` API; the dependency on it is isolated in a single
   adapter module of the project.
 - `kombu>=5.3,<6` — a public, stable API.
@@ -171,6 +197,7 @@ more publisher).
 ```
 src/faststream_celery/
 ├── __init__.py        # public exports with explicit __all__
+├── acknowledgement.py # delivery settlement protocol
 ├── annotations.py     # broker-specific Annotated type aliases
 ├── broker/            # broker.py (BrokerUsecase subclass), router.py, registrator.py, logging.py
 ├── configs/           # @dataclass(kw_only=True) configs inheriting BrokerConfig
@@ -190,18 +217,17 @@ Public exports: `from faststream_celery import CeleryBroker, CeleryRouter, TestC
 AsyncAPI specifications: minimal `SubscriberSpecification`/
 `PublisherSpecification` subclasses (queue/exchange/routing key) — required
 for `faststream docs`. The channel label identifies the documented endpoint;
-the channel address is its routing key. The adapter passes that address to
-FastStream releases whose channel spec models require it while preserving the
-minimum supported 0.7.5 release.
+the channel address is its routing key, passed directly to FastStream's
+`SubscriberSpec` and `PublisherSpec` models.
 
 ## Risks
 
-| Risk | Mitigation |
-|---|---|
-| Private `faststream._internal` breaks between releases | Minimum/latest release nox matrix, adapter module |
-| Chord — complex coordination via the result backend | A dedicated implementation stage |
+| Risk                                                      | Mitigation                                         |
+|-----------------------------------------------------------|----------------------------------------------------|
+| Private `faststream._internal` breaks between releases    | Minimum/latest release nox matrix, adapter module  |
+| Chord — complex coordination via the result backend       | A dedicated implementation stage                   |
 | Redis virtual transport (`unacked`, `visibility_timeout`) | Integration tests against live Celery from day one |
-| Client and worker `visibility_timeout` must match | Document; `transport_options` are passed through |
+| Client and worker `visibility_timeout` must match         | Document; `transport_options` are passed through   |
 
 ## Roadmap (beyond the first release)
 

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Final, Optional, Union, cast
 
 import anyio
 from faststream.exceptions import IncorrectState
-from faststream.message import StreamMessage
+from faststream.message import AckStatus, StreamMessage
 from faststream.middlewares import AckPolicy
 from typing_extensions import overload, override
 
@@ -215,7 +215,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
         )
 
         with suppress(*SETTLE_ERRORS, IncorrectState):
-            await msg.executor(msg.message.ack)
+            await msg.settle(AckStatus.ACKED)
 
     @override
     async def consume(self, msg: ConsumerMessage) -> Optional["Response"]:
@@ -235,7 +235,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
             return
 
         with suppress(*SETTLE_ERRORS, IncorrectState):
-            await msg.executor(partial(msg.message.reject, requeue=False))
+            await msg.settle(AckStatus.REJECTED)
 
     async def consume_one(self, msg: ConsumerMessage) -> None:
         await self.consume(msg)
@@ -301,8 +301,11 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
         self,
         message: "StreamMessage[Any]",
     ) -> Sequence["PublisherProto"]:
-        if message.headers.get("ignore_result"):
-            # The caller told us it will never read the result.
+        if message.headers.get("ignore_result") or message.committed in {
+            AckStatus.NACKED,
+            AckStatus.REJECTED,
+        }:
+            # Explicit nack/reject leaves processing without a reply outcome.
             return ()
 
         return (

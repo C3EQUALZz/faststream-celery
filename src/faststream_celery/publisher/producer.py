@@ -1,5 +1,6 @@
 import json
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Mapping
 from functools import partial
 from time import monotonic
 from typing import TYPE_CHECKING, Final, NamedTuple, Optional, cast
@@ -8,7 +9,7 @@ import anyio
 import anyio.to_thread
 from faststream.exceptions import FeatureNotSupportedException, IncorrectState
 from faststream.message import gen_cor_id
-from kombu import Connection, Consumer, Exchange, Producer, Queue
+from kombu import Connection, Consumer, Exchange, Message, Producer, Queue
 from typing_extensions import override
 
 from faststream_celery._internal import (
@@ -19,7 +20,7 @@ from faststream_celery._internal import (
     ProducerProto,
     dump_json,
 )
-from faststream_celery.message import ConsumerMessage, run_inline
+from faststream_celery.message import ConsumerMessage
 from faststream_celery.parser import CeleryParser
 from faststream_celery.response import CeleryPublishCommand
 from faststream_celery.schemas.constants import (
@@ -27,12 +28,12 @@ from faststream_celery.schemas.constants import (
     SERIALIZATION_ACCEPT,
     SERIALIZER,
 )
+from faststream_celery.schemas.result import READY_STATES
 from faststream_celery.schemas.task import CeleryTask, build_task_envelope
 from faststream_celery.types import MutableHeaders, TaskBody
 
 if TYPE_CHECKING:
     from fast_depends.library.serializer import SerializerProto
-    from kombu import Message
 
     from faststream_celery._internal import CustomCallable
 
@@ -163,11 +164,11 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
                 factory,
                 payload,
                 destination,
-                timeout=cmd.timeout or DEFAULT_REQUEST_TIMEOUT,
+                timeout=(DEFAULT_REQUEST_TIMEOUT if cmd.timeout is None else cmd.timeout),
             ),
         )
 
-        return ConsumerMessage(raw, run_inline)
+        return ConsumerMessage(raw)
 
     @override
     async def publish_batch(self, cmd: CeleryPublishCommand) -> None:
@@ -270,8 +271,8 @@ def request_sync(
     *,
     timeout: float,
 ) -> "Message":
-    """Publish and block until the matching reply lands on a temporary queue."""
-    replies: list[Message] = []
+    """Wait for a terminal reply, acknowledge it and return a channel-free copy."""
+    replies: deque[Message] = deque()
 
     with connection_factory() as connection:
         channel = connection.channel()
@@ -305,7 +306,7 @@ def request_sync(
         consumer.consume()
 
         deadline = monotonic() + timeout
-        while not replies:
+        while True:
             remaining = deadline - monotonic()
             if remaining <= 0:
                 msg = (
@@ -314,9 +315,28 @@ def request_sync(
                 )
                 raise TimeoutError(msg)
 
+            if replies:
+                reply = replies.popleft()
+                if reply.properties.get("correlation_id") == payload.correlation_id:
+                    result = reply.decode()
+                    if (
+                        isinstance(result, Mapping)
+                        and result.get("task_id") == payload.correlation_id
+                        and result.get("status") in READY_STATES
+                    ):
+                        reply.ack()
+                        return Message(
+                            body=reply.body,
+                            content_type=reply.content_type,
+                            content_encoding=reply.content_encoding,
+                            headers=dict(reply.headers or {}),
+                            properties=dict(reply.properties or {}),
+                            delivery_info=dict(reply.delivery_info or {}),
+                        )
+                reply.ack()
+                continue
+
             try:
                 connection.drain_events(timeout=remaining)
             except TimeoutError:
                 continue
-
-    return replies[0]

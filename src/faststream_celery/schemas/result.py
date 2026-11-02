@@ -6,7 +6,7 @@ expects this exact shape (``celery.backends.base.Backend._get_result_meta``).
 
 import traceback
 from datetime import datetime, timezone
-from typing import Literal, TypeAlias
+from typing import Final, Literal, TypeAlias
 
 from typing_extensions import TypedDict
 
@@ -14,8 +14,13 @@ from faststream_celery._internal import SendableMessage
 
 SUCCESS: Literal["SUCCESS"] = "SUCCESS"
 FAILURE: Literal["FAILURE"] = "FAILURE"
+REVOKED: Literal["REVOKED"] = "REVOKED"
 
-TaskStatus: TypeAlias = Literal["SUCCESS", "FAILURE"]
+# Celery's READY_STATES; progress and RETRY must keep a result waiter open.
+READY_STATES: Final[frozenset[str]] = frozenset((SUCCESS, FAILURE, REVOKED))
+
+# Celery workers may also report arbitrary application progress states.
+TaskStatus: TypeAlias = str
 
 
 class ExceptionInfo(TypedDict):

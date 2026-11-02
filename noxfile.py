@@ -20,7 +20,7 @@ nox.options.sessions = ["tests"]
 PYTHON_VERSIONS = ("3.10", "3.11", "3.12", "3.13", "3.14")
 
 # Match the minimum and latest allowed by pyproject.toml.
-FASTSTREAM_VERSIONS = ("==0.7.5", ">=0.7.5")
+FASTSTREAM_VERSIONS = ("==0.7.8", ">=0.7.8")
 
 # Both ends of `kombu>=5.3,<6`.
 KOMBU_VERSIONS = ("==5.3.0", ">=5.3,<6")
@@ -48,7 +48,9 @@ INTEGRATION_TEST_DEPS = (
 
 @nox.session(python=PYTHON_VERSIONS)
 @nox.parametrize(
-    "faststream", FASTSTREAM_VERSIONS, ids=("faststream_min", "faststream_latest")
+    "faststream",
+    FASTSTREAM_VERSIONS,
+    ids=("faststream_min", "faststream_latest"),
 )
 @nox.parametrize("kombu", KOMBU_VERSIONS, ids=("kombu_min", "kombu_latest"))
 def tests(session: nox.Session, faststream: str, kombu: str) -> None:

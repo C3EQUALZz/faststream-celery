@@ -1,7 +1,6 @@
 """RabbitMQ: the shared transport suite plus AMQP-only behaviour."""
 
 import asyncio
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -13,8 +12,12 @@ from tests.helpers import running
 from tests.integration.base import (
     CONSUME_TIMEOUT,
     WORKER_TIMEOUT,
+    OutcomeTestcase,
+    RequestTestcase,
+    ResponseTestcase,
     TransportTestcase,
 )
+from tests.integration.routing import RoutingTestcase
 
 pytestmark = [pytest.mark.connected(), pytest.mark.rabbit(), pytest.mark.slow()]
 
@@ -23,7 +26,7 @@ class TestRabbitTransport(TransportTestcase):
     """Every transport behaviour, over RabbitMQ."""
 
 
-class TestAmqpRpc:
+class TestAmqpRpc(RequestTestcase, OutcomeTestcase, ResponseTestcase, RoutingTestcase):
     """Task results over AMQP RPC — `reply_to` plus `correlation_id`."""
 
     @pytest.mark.asyncio()
@@ -78,11 +81,11 @@ class TestAmqpRpc:
             assert async_result.status == "FAILURE"
 
     @pytest.mark.asyncio()
+    @pytest.mark.usefixtures("celery_worker")
     async def test_our_request_gets_a_celery_worker_result(
         self,
         broker: CeleryBroker,
         queue: str,
-        celery_worker: Path,  # ruff: ignore[unused-method-argument]
     ) -> None:
         """`broker.request(...)` returns a real worker's result."""
         async with running(broker):
@@ -98,11 +101,11 @@ class TestAmqpRpc:
         assert envelope["result"] == 5
 
     @pytest.mark.asyncio()
+    @pytest.mark.usefixtures("celery_worker")
     async def test_our_request_reports_a_worker_failure(
         self,
         broker: CeleryBroker,
         queue: str,
-        celery_worker: Path,  # ruff: ignore[unused-method-argument]
     ) -> None:
         """A task that raises on the worker comes back as a FAILURE envelope."""
         async with running(broker):
@@ -133,11 +136,11 @@ class TestAmqpRpc:
                 )
 
     @pytest.mark.asyncio()
+    @pytest.mark.usefixtures("celery_worker")
     async def test_each_request_uses_its_own_reply_queue(
         self,
         broker: CeleryBroker,
         queue: str,
-        celery_worker: Path,  # ruff: ignore[unused-method-argument]
     ) -> None:
         """Concurrent requests do not read each other's replies."""
         async with running(broker):

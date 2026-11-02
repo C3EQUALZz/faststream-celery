@@ -266,11 +266,11 @@ class CeleryBroker(
         headers: MutableHeaders | None = None,
         timeout: float | None = 30.0,
     ) -> "CeleryMessage":
-        """Publish a Celery task and wait for its result (AMQP RPC).
+        """Publish a Celery task and wait for its terminal result.
 
-        The task is published with a `reply_to` pointing at a temporary
-        exclusive queue; the Celery result envelope that a worker publishes
-        there is decoded and returned.
+        With a result backend, wait on the task's result key. Otherwise, use
+        a temporary exclusive AMQP reply queue. SUCCESS, FAILURE and REVOKED
+        complete the request; intermediate states keep the original deadline.
 
         Args:
             message: Message body to send, usually a `CeleryTask`.
@@ -324,7 +324,7 @@ class CeleryBroker(
 
         envelope = await backend.wait(
             task_id,
-            timeout=cmd.timeout or DEFAULT_REQUEST_TIMEOUT,
+            timeout=DEFAULT_REQUEST_TIMEOUT if cmd.timeout is None else cmd.timeout,
         )
 
         raw = local_message(
@@ -352,7 +352,7 @@ class CeleryBroker(
     @override
     async def ping(self, timeout: float | None = 3) -> bool:
         connection = self._connection
-        if connection is None:
+        if connection is None or not self.config.broker_config.consumers.is_alive:
             return False
 
         try:

@@ -8,7 +8,6 @@ to work with no AMQP exchange anywhere in sight.
 import asyncio
 import json
 from collections.abc import Mapping
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -19,9 +18,13 @@ from tests.helpers import running
 from tests.integration.base import (
     CONSUME_TIMEOUT,
     WORKER_TIMEOUT,
+    OutcomeTestcase,
+    RequestTestcase,
+    ResponseTestcase,
     TransportTestcase,
     wait_for,
 )
+from tests.integration.routing import RoutingTestcase
 
 if TYPE_CHECKING:
     import redis
@@ -144,7 +147,12 @@ class TestRedisSpecifics:
         assert received == [[7, 8]]
 
 
-class TestResultBackend:
+class TestResultBackend(
+    RequestTestcase,
+    OutcomeTestcase,
+    ResponseTestcase,
+    RoutingTestcase,
+):
     """`celery-task-meta-<id>` in both directions (ticket-4)."""
 
     @pytest.fixture()
@@ -238,11 +246,11 @@ class TestResultBackend:
         assert meta["date_done"]
 
     @pytest.mark.asyncio()
+    @pytest.mark.usefixtures("celery_worker")
     async def test_our_request_reads_a_celery_worker_result(
         self,
         broker: CeleryBroker,
         queue: str,
-        celery_worker: Path,  # ruff: ignore[unused-method-argument]
     ) -> None:
         """`broker.request()` waits on the backend, not a reply queue."""
         async with running(broker):

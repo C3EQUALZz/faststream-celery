@@ -9,12 +9,12 @@ subscriber whose ``task=`` claims it.
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
-from functools import partial
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from faststream.exceptions import IncorrectState
+from faststream.message import AckStatus
 
 from faststream_celery.exceptions import DECODE_ERRORS, SETTLE_ERRORS
 from faststream_celery.message import ConsumerMessage
@@ -41,6 +41,25 @@ class QueueSubscriber(Protocol):
         ...
 
 
+SubscriberT = TypeVar("SubscriberT", bound=QueueSubscriber)
+
+
+def select_subscriber(
+    subscribers: Iterable[SubscriberT],
+    msg: ConsumerMessage,
+) -> SubscriberT | None:
+    """Select one exact task match, otherwise the first fallback."""
+    name = task_name(msg)
+    fallback: SubscriberT | None = None
+    for subscriber in subscribers:
+        task = subscriber.task
+        if task == name:
+            return subscriber
+        if task is None and fallback is None:
+            fallback = subscriber
+    return fallback
+
+
 class SharedConsumer:
     """The single kombu consumer standing behind one queue."""
 
@@ -52,7 +71,7 @@ class SharedConsumer:
         self._reader: asyncio.Task[None] | None = None
 
     def register(self, subscriber: QueueSubscriber) -> None:
-        """Add a subscriber to the fan-out."""
+        """Register a candidate subscriber for this queue."""
         if subscriber not in self._subscribers:
             self._subscribers.append(subscriber)
 
@@ -86,7 +105,15 @@ class SharedConsumer:
 
     async def _route_forever(self) -> None:
         while True:
-            msg = await self.bridge.get()
+            try:
+                msg = await self.bridge.get()
+            except IncorrectState as exc:
+                self._logger.log(
+                    f"Consumer stopped: {exc!r}",
+                    logging.ERROR,
+                    exc_info=exc,
+                )
+                return
 
             try:
                 await self._route(msg)
@@ -101,22 +128,13 @@ class SharedConsumer:
                 )
 
     async def _route(self, msg: ConsumerMessage) -> None:
-        subscriber = self._claimant(msg)
+        subscriber = select_subscriber(self._subscribers, msg)
 
         if subscriber is None:
             await self._drop(msg)
             return
 
         await subscriber.dispatch(msg)
-
-    def _claimant(self, msg: ConsumerMessage) -> QueueSubscriber | None:
-        task_name = _task_name(msg)
-
-        for subscriber in self._subscribers:
-            if subscriber.task == task_name:
-                return subscriber
-
-        return next((s for s in self._subscribers if s.task is None), None)
 
     async def _drop(self, msg: ConsumerMessage) -> None:
         """Reject a task no subscriber claims.
@@ -126,7 +144,7 @@ class SharedConsumer:
         unknown task the same way.
         """
         with suppress(*SETTLE_ERRORS, IncorrectState):
-            await msg.executor(partial(msg.message.reject, requeue=False))
+            await msg.settle(AckStatus.REJECTED)
 
 
 class ConsumerRegistry:
@@ -134,6 +152,11 @@ class ConsumerRegistry:
 
     def __init__(self) -> None:
         self._consumers: dict[str, SharedConsumer] = {}
+
+    @property
+    def is_alive(self) -> bool:
+        """Whether all registered queue consumers are currently consuming."""
+        return all(consumer.bridge.is_alive for consumer in self._consumers.values())
 
     def acquire(
         self,
@@ -160,6 +183,7 @@ class ConsumerRegistry:
                 queue_name=queue,
                 accept=accept,
                 prefetch_count=prefetch_count,
+                logger=logger,
             ),
             logger,
         )
@@ -176,7 +200,7 @@ class ConsumerRegistry:
             del self._consumers[queue]
 
 
-def _task_name(msg: ConsumerMessage) -> str | None:
+def task_name(msg: ConsumerMessage) -> str | None:
     try:
         name = read_headers(msg.message).get("task")
     except DECODE_ERRORS:

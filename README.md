@@ -61,8 +61,11 @@ async def resize(args: list, kwargs: dict) -> None: ...
 async def fallback(args: list, kwargs: dict) -> None: ...
 ```
 
-Leave `task=` off and the handler takes every task on the queue. A task nobody
-claims is rejected, the way a Celery worker rejects one it does not know.
+For each message, an exact `task=` match takes precedence over the fallback
+without `task=`. Only one subscriber receives the message, in both production
+and `TestCeleryBroker`. A custom filter rejecting the selected exact subscriber
+does not retry the fallback. A task nobody claims is rejected, the way a Celery
+worker rejects one it does not know.
 
 Returning a value is enough to answer the caller: with an AMQP `reply_to` or a
 result backend configured, `AsyncResult.get()` on the client side returns it. A
@@ -101,6 +104,29 @@ result = await response.decode()  # {"status": "SUCCESS", "result": 5, ...}
 Without a result backend that waits on a temporary AMQP reply queue. With one it
 reads `celery-task-meta-<id>`, exactly as `AsyncResult.get()` does.
 
+`request()` waits for `SUCCESS`, `FAILURE` or `REVOKED`. Intermediate states
+such as `STARTED`, `RETRY` and custom progress states keep waiting within the
+same timeout. A failure or revocation is returned as its Celery result envelope.
+
+Handlers may return a FastStream `Response`: its body becomes the Celery result
+and the value passed to callbacks and chain steps. Its headers and correlation
+ID remain available to ordinary FastStream publishers; Celery results keep the
+incoming task ID.
+
+RPC replies are acknowledged before their connection closes. Returned results
+have no delivery to settle: their `ack()`, `nack()` and `reject()` methods only
+update local message state and cannot requeue the completed task.
+
+FastStream delivery instructions (`AckMessage`, `NackMessage`, `RejectMessage`,
+`SkipMessage`) produce no task result or canvas continuation. The same applies
+when a handler explicitly calls `message.nack()` or `message.reject()`. With
+`AckPolicy.NACK_ON_ERROR`, an exception leaves the result unfinished while the
+delivery is requeued; a later successful attempt can complete it.
+
+Calling `message.ack()` and then returning normally still reports the handler's
+result. If processing ends with a delivery instruction and no later outcome,
+clients waiting for the task result time out.
+
 ## Transports and results
 
 ```python
@@ -115,6 +141,15 @@ RabbitMQ and Redis are both supported, and both are tested against a live Celery
 on every commit. On Redis, `visibility_timeout` has to match across every client
 and worker sharing the bus — otherwise one side redelivers what another is still
 working on.
+
+After a consumer has started, recoverable read-connection failures are retried
+automatically with capped exponential backoff. `broker.ping()` returns `False`
+while any queue consumer is recovering or has stopped. Errors establishing the
+first consumer connection still propagate from startup.
+
+Acknowledgements from a disconnected consumer fail rather than running on the
+replacement connection. Unacknowledged tasks may be redelivered, so handlers
+must tolerate repeated execution.
 
 | | Read | Publish |
 |---|---|---|
@@ -140,6 +175,11 @@ async def test_send_email() -> None:
 ```
 
 Assert inside the block: the mocks are reset on the way out.
+
+`request()` returns the same Celery result envelope in fake mode as with a real
+broker, including `FAILURE` for handler errors. An ordinary test `publish()`
+still raises handler exceptions. Requests with no result time out; unfinished
+request handlers are cancelled when the test broker exits.
 
 A broker configured with `result_backend=` works there too — the backend is
 swapped for an in-memory one, so results are recorded and `request()` reads

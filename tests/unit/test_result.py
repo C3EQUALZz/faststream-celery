@@ -207,4 +207,7 @@ async def test_request_round_trip_in_fake_mode(queue: str) -> None:
             queue=queue,
         )
 
-        assert await response.decode() == 3
+        envelope = await response.decode()
+        assert isinstance(envelope, dict)
+        assert envelope["status"] == SUCCESS
+        assert envelope["result"] == 3
