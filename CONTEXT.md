@@ -56,6 +56,18 @@ _Avoid_: delay, timeout
 
 ### Results
 
+**Delivery disposition**:
+The decision to acknowledge, requeue or reject a received task message. It is separate from the task's outcome.
+_Avoid_: task status, task completion
+
+**Task outcome**:
+The final success, failure or revocation of a task, communicated to the client and used to complete its workflow. A delivery disposition alone does not establish an outcome.
+_Avoid_: acknowledgement, delivery status
+
+**Redelivery**:
+Another delivery of the same task message for a new processing attempt. It does not imply a Celery retry with a changed retry count or schedule.
+_Avoid_: Celery retry
+
 **AMQP RPC**:
 Getting a result via `reply_to` + `correlation_id` (a temporary reply queue). Maps onto FastStream's stock `broker.request()`.
 _Avoid_: RPC backend, reply queue

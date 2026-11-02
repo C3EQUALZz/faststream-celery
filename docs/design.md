@@ -67,6 +67,13 @@ No Celery-specific defaults. The stock `AckPolicy`
 `CeleryMessage.ack()/nack()/reject()` map onto kombu acknowledgements. See
 ADR-0002.
 
+Delivery disposition and task outcome are separate (ADR-0004). The FastStream
+`HandlerException` instructions produce no result or canvas continuation.
+Explicit `nack()` / `reject()` also leave processing without an outcome, even
+when the handler returns normally. Exceptions subject to `NACK_ON_ERROR` do
+not publish terminal failure unless the delivery was already acknowledged.
+Ordinary completion after `ack()` still reports a success or failure outcome.
+
 The broker has no retry API (like every other FastStream broker): redelivery is
 expressed via `AckPolicy` / `message.nack()`, and scenario-level retries via a
 user middleware (the documented FastStream `RetryMiddleware` pattern). The

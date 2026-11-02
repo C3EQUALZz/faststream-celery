@@ -8,12 +8,20 @@ belongs in that transport's module instead.
 
 import asyncio
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 import pytest
 from celery import Celery
-from faststream.exceptions import IncorrectState
+from celery.exceptions import TimeoutError as CeleryTimeoutError
+from faststream.exceptions import (
+    AckMessage,
+    IncorrectState,
+    NackMessage,
+    RejectMessage,
+    SkipMessage,
+)
 from faststream.middlewares import AckPolicy
 
 from faststream_celery import CeleryBroker, CeleryTask, signature
@@ -40,6 +48,89 @@ def wait_for_log(log_file: Path, timeout: float = WORKER_TIMEOUT) -> list[Any]:
         time.sleep(0.2)
 
     return read_log(log_file)
+
+
+class OutcomeTestcase:
+    """Delivery control leaves a real Celery client's result unfinished."""
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("mode", ("nack_exception", "nack_on_error", "manual_nack"))
+    async def test_redelivery_has_no_terminal_outcome_until_success(
+        self,
+        broker: CeleryBroker,
+        celery_app: Celery,
+        queue: str,
+        mode: str,
+    ) -> None:
+        policy = AckPolicy.MANUAL if mode == "manual_nack" else AckPolicy.NACK_ON_ERROR
+        retry_started = asyncio.Event()
+        release = asyncio.Event()
+        attempts = 0
+
+        @broker.subscriber(queue, task="tests.outcome", ack_policy=policy)
+        async def handler(message: CeleryMessage) -> int:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                if mode == "nack_exception":
+                    raise NackMessage
+                if mode == "nack_on_error":
+                    error = "temporary failure"
+                    raise ValueError(error)
+                await message.nack()
+                return -1
+            retry_started.set()
+            await release.wait()
+            await message.ack()
+            return 7
+
+        async with running(broker):
+            result = celery_app.send_task("tests.outcome", queue=queue)
+            try:
+                await wait_for(retry_started)
+                with pytest.raises(CeleryTimeoutError):
+                    await asyncio.to_thread(result.get, timeout=0.3)
+                release.set()
+                assert await asyncio.to_thread(result.get, timeout=CONSUME_TIMEOUT) == 7
+                assert attempts == 2
+            finally:
+                release.set()
+                with suppress(NotImplementedError):
+                    await asyncio.to_thread(result.forget)
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("instruction", ("ack", "reject", "skip", "manual_reject"))
+    async def test_control_disposition_creates_no_task_outcome(
+        self,
+        broker: CeleryBroker,
+        celery_app: Celery,
+        queue: str,
+        instruction: str,
+    ) -> None:
+        processed = asyncio.Event()
+        exceptions = {"ack": AckMessage, "reject": RejectMessage, "skip": SkipMessage}
+
+        @broker.subscriber(queue, task="tests.control")
+        async def handler(message: CeleryMessage) -> int:
+            if instruction == "manual_reject":
+                await message.reject()
+                return -1
+            raise exceptions[instruction]
+
+        @broker.subscriber(queue, task="tests.probe")
+        async def probe() -> None:
+            processed.set()
+
+        async with running(broker):
+            result = celery_app.send_task("tests.control", queue=queue)
+            try:
+                celery_app.send_task("tests.probe", queue=queue, ignore_result=True)
+                await wait_for(processed)
+                with pytest.raises(CeleryTimeoutError):
+                    await asyncio.to_thread(result.get, timeout=0.3)
+            finally:
+                with suppress(NotImplementedError):
+                    await asyncio.to_thread(result.forget)
 
 
 class RequestTestcase:

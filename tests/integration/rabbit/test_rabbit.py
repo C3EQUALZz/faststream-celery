@@ -13,6 +13,7 @@ from tests.helpers import running
 from tests.integration.base import (
     CONSUME_TIMEOUT,
     WORKER_TIMEOUT,
+    OutcomeTestcase,
     RequestTestcase,
     TransportTestcase,
 )
@@ -24,7 +25,7 @@ class TestRabbitTransport(TransportTestcase):
     """Every transport behaviour, over RabbitMQ."""
 
 
-class TestAmqpRpc(RequestTestcase):
+class TestAmqpRpc(RequestTestcase, OutcomeTestcase):
     """Task results over AMQP RPC — `reply_to` plus `correlation_id`."""
 
     @pytest.mark.asyncio()

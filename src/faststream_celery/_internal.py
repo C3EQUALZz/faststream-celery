@@ -5,7 +5,7 @@ module (see ``docs/design.md`` §12), so a breaking change in the private API
 has a single point of repair.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from faststream._internal._compat import dump_json
 from faststream._internal.basic_types import (
@@ -68,6 +68,7 @@ from faststream._internal.types import (
     PublisherMiddleware,
     T_HandlerReturn,
 )
+from faststream.middlewares import AckPolicy
 
 if TYPE_CHECKING:
     from fast_depends.library.serializer import SerializerProto
@@ -119,6 +120,7 @@ __all__ = (
     "change_producer",
     "default_filter",
     "dump_json",
+    "get_ack_policy",
     "get_broker_logger",
     "make_logger_state",
     "process_msg",
@@ -133,3 +135,9 @@ def resolve_serializer(fd_config: FastDependsConfig) -> "SerializerProto | None"
     only the private property resolves it to the real default serializer.
     """
     return fd_config._serializer
+
+
+def get_ack_policy(context: ContextRepo) -> AckPolicy | None:
+    """Resolve the active subscriber's policy from FastStream's scoped context."""
+    subscriber = cast("SubscriberUsecase[Any] | None", context.get_local("handler_"))
+    return subscriber.ack_policy if subscriber is not None else None

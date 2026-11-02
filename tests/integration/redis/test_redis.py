@@ -19,6 +19,7 @@ from tests.helpers import running
 from tests.integration.base import (
     CONSUME_TIMEOUT,
     WORKER_TIMEOUT,
+    OutcomeTestcase,
     RequestTestcase,
     TransportTestcase,
     wait_for,
@@ -145,7 +146,7 @@ class TestRedisSpecifics:
         assert received == [[7, 8]]
 
 
-class TestResultBackend(RequestTestcase):
+class TestResultBackend(RequestTestcase, OutcomeTestcase):
     """`celery-task-meta-<id>` in both directions (ticket-4)."""
 
     @pytest.fixture()

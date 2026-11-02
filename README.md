@@ -105,6 +105,16 @@ reads `celery-task-meta-<id>`, exactly as `AsyncResult.get()` does.
 such as `STARTED`, `RETRY` and custom progress states keep waiting within the
 same timeout. A failure or revocation is returned as its Celery result envelope.
 
+FastStream delivery instructions (`AckMessage`, `NackMessage`, `RejectMessage`,
+`SkipMessage`) produce no task result or canvas continuation. The same applies
+when a handler explicitly calls `message.nack()` or `message.reject()`. With
+`AckPolicy.NACK_ON_ERROR`, an exception leaves the result unfinished while the
+delivery is requeued; a later successful attempt can complete it.
+
+Calling `message.ack()` and then returning normally still reports the handler's
+result. If processing ends with a delivery instruction and no later outcome,
+clients waiting for the task result time out.
+
 ## Transports and results
 
 ```python

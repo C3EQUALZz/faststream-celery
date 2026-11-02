@@ -37,7 +37,7 @@ class TestAcknowledgement:
         message: CeleryMessage,
         raw: RecordingMessage,
     ) -> None:
-        """Nack maps to a kombu reject with requeue (Celery retry semantics)."""
+        """Nack maps to a kombu reject with requeue of the same delivery."""
         await message.nack()
 
         assert raw.rejects == [True]

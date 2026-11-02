@@ -103,7 +103,7 @@ class CeleryMessage(StreamMessage[ConsumerMessage]):
 
     @override
     async def nack(self) -> None:
-        """Reject the message with requeue (Celery task retry semantics)."""
+        """Requeue the same delivery without changing Celery retries or ETA."""
         if self.committed is None:
             await super().nack()
             await self._ack_executor(partial(self.kombu_message.reject, requeue=True))
