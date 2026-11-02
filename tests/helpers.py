@@ -7,7 +7,7 @@ confusing collection errors.
 
 import json
 import threading
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -103,11 +103,6 @@ class RecordingMessage(Message):
         self._state = "REJECTED"
 
 
-async def run_inline(action: Callable[[], None]) -> None:
-    """Ack executor that runs on the caller's thread."""
-    action()
-
-
 def raw_message(
     body: Any,
     *,
@@ -137,15 +132,13 @@ def consumer_message(
     content_type: str | None = JSON_CONTENT_TYPE,
 ) -> ConsumerMessage:
     """A raw message wrapped for the FastStream pipeline."""
-    return ConsumerMessage(
-        raw_message(
-            body,
-            headers=headers,
-            properties=properties,
-            content_type=content_type,
-        ),
-        run_inline,
+    raw = raw_message(
+        body,
+        headers=headers,
+        properties=properties,
+        content_type=content_type,
     )
+    return ConsumerMessage(raw, raw)
 
 
 def task_message(  # ruff: ignore[too-many-arguments]

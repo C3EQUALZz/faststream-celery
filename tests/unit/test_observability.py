@@ -23,7 +23,7 @@ from faststream_celery.prometheus import (
     CeleryPrometheusMiddleware,
 )
 from faststream_celery.response import CeleryPublishCommand
-from tests.helpers import raw_message, run_inline
+from tests.helpers import raw_message
 
 
 def stream_message(
@@ -40,9 +40,8 @@ def stream_message(
     raw.delivery_info = {"exchange": exchange, "routing_key": routing_key}
 
     return CeleryMessage(
-        raw_message=ConsumerMessage(raw, run_inline),
+        raw_message=ConsumerMessage(raw, raw),
         body=msg_body(),
-        ack_executor=run_inline,
         headers={"task": task, "id": "task-id-1"},
         correlation_id="task-id-1",
         message_id="task-id-1",

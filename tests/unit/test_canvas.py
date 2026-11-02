@@ -7,7 +7,7 @@ import pytest
 
 from faststream_celery import CeleryBroker, CeleryTask, TestCeleryBroker, signature
 from faststream_celery.canvas import CanvasDispatcher
-from faststream_celery.message import CeleryMessage, run_inline
+from faststream_celery.message import CeleryMessage
 from faststream_celery.parser import read_embed, read_headers
 from faststream_celery.schemas.signature import call_args, queue_of
 from faststream_celery.schemas.task import as_signature, build_task_envelope
@@ -176,7 +176,6 @@ class TestDispatcher:
         return CeleryMessage(
             raw_message=incoming,
             body=b"",
-            ack_executor=run_inline,
             headers=dict(read_headers(incoming.message)),
             correlation_id="task-id-1",
             message_id="task-id-1",

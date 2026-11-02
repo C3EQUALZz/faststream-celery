@@ -19,7 +19,7 @@ from faststream_celery.backend.redis import (
     KEY_PREFIX,
     RedisResultBackend,
 )
-from faststream_celery.message import CeleryMessage, local_message, run_inline
+from faststream_celery.message import CeleryMessage, local_message
 from faststream_celery.middlewares import CeleryResultMiddleware
 from faststream_celery.schemas.constants import CONTENT_TYPE
 from faststream_celery.schemas.result import build_success
@@ -511,7 +511,6 @@ class TestReplyMessagesAreNotResults:
                 correlation_id="task-id-1",
             ),
             body=b'{"status": "SUCCESS"}',
-            ack_executor=run_inline,
             correlation_id="task-id-1",
             source_type=SourceType.RESPONSE,
         )

@@ -76,7 +76,11 @@ def test_rpc_waits_for_a_matching_terminal_result(
     terminal = reply(status)
     stream.messages.extend([*discarded, terminal])
 
-    assert request(factory) is terminal
+    response = request(factory)
+    assert response is not terminal
+    assert response.channel is None
+    assert response.decode() == terminal.decode()
+    assert terminal.acknowledged
     assert all(message.acknowledged for message in discarded)
 
 
@@ -91,3 +95,19 @@ def test_rpc_progress_does_not_reset_the_deadline(
 
     with pytest.raises(TimeoutError, match="No Celery reply"):
         request(factory, timeout=1)
+
+
+def test_terminal_reply_is_acked_before_its_connection_closes(
+    rpc: tuple[MagicMock, RpcReplies],
+) -> None:
+    factory, stream = rpc
+    terminal = reply("SUCCESS")
+    stream.messages.append(terminal)
+    order = MagicMock()
+    assert terminal.channel is not None
+    order.attach_mock(terminal.channel.basic_ack, "ack")
+    order.attach_mock(factory.return_value.__exit__, "close")
+
+    request(factory)
+
+    assert [call[0] for call in order.mock_calls] == ["ack", "close"]

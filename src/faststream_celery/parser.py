@@ -60,7 +60,6 @@ class CeleryParser:
 
         return CeleryMessage(
             raw_message=message,
-            ack_executor=message.executor,
             body=body,
             headers=headers,
             reply_to=properties.get("reply_to") or "",

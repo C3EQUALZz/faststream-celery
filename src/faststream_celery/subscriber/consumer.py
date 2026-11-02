@@ -11,10 +11,10 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import suppress
-from functools import partial
 from typing import TYPE_CHECKING, Protocol
 
 from faststream.exceptions import IncorrectState
+from faststream.message import AckStatus
 
 from faststream_celery.exceptions import DECODE_ERRORS, SETTLE_ERRORS
 from faststream_celery.message import ConsumerMessage
@@ -134,7 +134,7 @@ class SharedConsumer:
         unknown task the same way.
         """
         with suppress(*SETTLE_ERRORS, IncorrectState):
-            await msg.executor(partial(msg.message.reject, requeue=False))
+            await msg.settle(AckStatus.REJECTED)
 
 
 class ConsumerRegistry:

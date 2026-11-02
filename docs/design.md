@@ -74,6 +74,13 @@ when the handler returns normally. Exceptions subject to `NACK_ON_ERROR` do
 not publish terminal failure unless the delivery was already acknowledged.
 Ordinary completion after `ack()` still reports a success or failure outcome.
 
+The internal `Acknowledgement` protocol exposes `ack()` and `reject(requeue=...)`.
+In-memory messages implement them synchronously; a real delivery returns an
+awaitable tied to its owning consumer session. `CeleryMessage` commits its state
+after settlement succeeds and serializes concurrent settlement calls. Backend
+results and RPC snapshots have no delivery controller; RPC settlement finishes
+on the connection's thread before returning the snapshot.
+
 The broker has no retry API (like every other FastStream broker): redelivery is
 expressed via `AckPolicy` / `message.nack()`, and scenario-level retries via a
 user middleware (the documented FastStream `RetryMiddleware` pattern). The
@@ -183,6 +190,7 @@ more publisher).
 ```
 src/faststream_celery/
 ├── __init__.py        # public exports with explicit __all__
+├── acknowledgement.py # delivery settlement protocol
 ├── annotations.py     # broker-specific Annotated type aliases
 ├── broker/            # broker.py (BrokerUsecase subclass), router.py, registrator.py, logging.py
 ├── configs/           # @dataclass(kw_only=True) configs inheriting BrokerConfig

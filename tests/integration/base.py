@@ -137,12 +137,35 @@ class RequestTestcase:
     """Terminal result waiting with a real Celery worker on either backend."""
 
     @pytest.mark.asyncio()
+    @pytest.mark.parametrize("operation", ("ack", "nack", "reject"))
+    @pytest.mark.usefixtures("celery_worker")
+    async def test_request_result_is_detached_from_transport_settlement(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        operation: str,
+    ) -> None:
+        async with running(broker):
+            response = await broker.request(
+                CeleryTask("tests.add", args=[2, 3]),
+                queue=queue,
+                timeout=WORKER_TIMEOUT,
+            )
+            assert response.kombu_message.channel is None
+            assert response.raw_message.acknowledgement is None
+            await getattr(response, operation)()
+            envelope = await response.decode()
+            assert isinstance(envelope, dict)
+            assert envelope["status"] == "SUCCESS"
+            assert envelope["result"] == 5
+
+    @pytest.mark.asyncio()
     @pytest.mark.parametrize("fail", (False, True))
+    @pytest.mark.usefixtures("celery_worker")
     async def test_request_waits_through_worker_progress_and_retry(
         self,
         broker: CeleryBroker,
         queue: str,
-        celery_worker: Path,  # ruff: ignore[unused-method-argument]
         fail: bool,
     ) -> None:
         async with running(broker):
@@ -165,11 +188,11 @@ class RequestTestcase:
             assert envelope["result"] == 7
 
     @pytest.mark.asyncio()
+    @pytest.mark.usefixtures("celery_worker")
     async def test_request_times_out_while_the_worker_is_retrying(
         self,
         broker: CeleryBroker,
         queue: str,
-        celery_worker: Path,  # ruff: ignore[unused-method-argument]
     ) -> None:
         async with running(broker):
             with pytest.raises(TimeoutError, match=r"No Celery (reply|result)"):
@@ -257,6 +280,7 @@ class TransportTestcase:
 
             with pytest.raises(IncorrectState, match="closed"):
                 await old.ack()
+            assert old.committed is None
             await redelivered.ack()
             assert await broker.ping()
 

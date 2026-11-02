@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from faststream.exceptions import IncorrectState
+from faststream.message import AckStatus
 from kombu import Connection, Exchange, Producer, Queue
 
 from faststream_celery import CeleryBroker
@@ -130,7 +131,7 @@ class TestMessageFlow:
         for _ in range(3):
             msg = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
             received.append(msg.message.headers["id"])
-            await msg.executor(msg.message.ack)
+            await msg.settle(AckStatus.ACKED)
 
         assert received == ["0", "1", "2"]
 
@@ -148,7 +149,7 @@ class TestMessageFlow:
         publish(queue, [[], {}, {}], headers={"task": "t", "id": "1"})
         msg = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
 
-        await msg.executor(msg.message.ack)
+        await msg.settle(AckStatus.ACKED)
 
         assert msg.message.acknowledged
 
@@ -164,11 +165,11 @@ class TestMessageFlow:
 
         publish(queue, [[], {}, {}], headers={"task": "t", "id": "1"})
         msg = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
-        await msg.executor(msg.message.ack)
+        await msg.settle(AckStatus.ACKED)
 
         # Acking twice is a kombu MessageStateError, raised on the thread.
         with pytest.raises(Exception, match="already acknowledged"):
-            await msg.executor(msg.message.ack)
+            await msg.settle(AckStatus.ACKED)
 
         await bridge.stop()
 
@@ -201,7 +202,7 @@ class TestSettleLatency:
 
         assert bridge._next_timeout() == min(DRAIN_TIMEOUT, SETTLE_DRAIN_TIMEOUT)
 
-        await msg.executor(msg.message.ack)
+        await msg.settle(AckStatus.ACKED)
 
         assert bridge._next_timeout() == DRAIN_TIMEOUT
 
@@ -236,33 +237,12 @@ class TestSettleLatency:
         started = time.monotonic()
         for _ in range(total):
             msg = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
-            await msg.executor(msg.message.ack)
+            await msg.settle(AckStatus.ACKED)
         elapsed = time.monotonic() - started
 
         assert elapsed < total * slow_drain
 
         await bridge.stop()
-
-
-class TestAckExecutor:
-    @pytest.mark.asyncio()
-    async def test_execute_before_start_is_rejected(
-        self,
-        bridge: ConsumerBridge,
-    ) -> None:
-        with pytest.raises(IncorrectState, match="not running"):
-            await bridge.execute(lambda: None)
-
-    @pytest.mark.asyncio()
-    async def test_execute_after_stop_is_rejected(
-        self,
-        bridge: ConsumerBridge,
-    ) -> None:
-        await bridge.start()
-        await bridge.stop()
-
-        with pytest.raises(IncorrectState, match="not running"):
-            await bridge.execute(lambda: None)
 
 
 class TestPrefetch:
@@ -336,7 +316,7 @@ class TestRecovery:
         try:
             publish(queue, "before")
             first = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
-            await first.executor(first.message.ack)
+            await first.settle(AckStatus.ACKED)
 
             faults.unavailable.set()
             faults.disconnect.set()
@@ -347,7 +327,7 @@ class TestRecovery:
             publish(queue, "after")
             recovered = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
             assert recovered.message.decode() == "after"
-            await recovered.executor(recovered.message.ack)
+            await recovered.settle(AckStatus.ACKED)
             assert bridge.is_alive
         finally:
             faults.unavailable.clear()
@@ -367,15 +347,14 @@ class TestRecovery:
             faults.disconnect.set()
             await _until(lambda: len(faults.connections) >= 2 and bridge.is_alive)
 
-            action = MagicMock()
             with pytest.raises(IncorrectState, match="closed"):
-                await asyncio.wait_for(old.executor(action), timeout=GET_TIMEOUT)
-            action.assert_not_called()
+                await asyncio.wait_for(old.settle(AckStatus.ACKED), timeout=GET_TIMEOUT)
+            assert not old.message.acknowledged
 
             publish(queue, "new")
             new = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
             assert new.message.channel is not old.message.channel
-            await new.executor(new.message.ack)
+            await new.settle(AckStatus.ACKED)
         finally:
             await bridge.stop()
 
@@ -392,14 +371,13 @@ class TestRecovery:
             faults.disconnect.set()
             await _until(faults.disconnected.is_set)
 
-            action = MagicMock()
-            pending = asyncio.ensure_future(message.executor(action))
+            pending = asyncio.ensure_future(message.settle(AckStatus.ACKED))
             await asyncio.sleep(0)
             faults.resume.set()
 
             with pytest.raises(IncorrectState, match=r"closed|stopped"):
                 await asyncio.wait_for(pending, timeout=GET_TIMEOUT)
-            action.assert_not_called()
+            assert not message.message.acknowledged
         finally:
             faults.resume.set()
             if pending is not None:
@@ -423,8 +401,6 @@ class TestRecovery:
                 await bridge.get()
             assert not bridge.is_alive
 
-            with pytest.raises(IncorrectState, match="not running"):
-                await bridge.execute(MagicMock())
             assert len(faults.connections) == 1
         finally:
             await bridge.stop()
@@ -440,14 +416,14 @@ class TestRecovery:
                 publish(queue, body)
             first = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
             await _until(lambda: bridge._messages.qsize() == 2)
-            await first.executor(first.message.ack)
+            await first.settle(AckStatus.ACKED)
 
             faults.disconnect.set()
             await _until(lambda: len(faults.connections) >= 2 and bridge.is_alive)
             publish(queue, "fresh")
             fresh = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
             assert fresh.message.decode() == "fresh"
-            await fresh.executor(fresh.message.ack)
+            await fresh.settle(AckStatus.ACKED)
         finally:
             await bridge.stop()
 
@@ -471,7 +447,11 @@ class TestRecovery:
             await bridge.stop()
 
     @pytest.mark.asyncio()
-    async def test_ack_transport_failure_triggers_recovery(self, queue: str) -> None:
+    async def test_ack_transport_failure_triggers_recovery(
+        self,
+        queue: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         faults = ConnectionFaults(MEMORY_URL)
         bridge = _faulty_bridge(faults, queue)
         await bridge.start()
@@ -479,13 +459,14 @@ class TestRecovery:
             publish(queue, "old")
             old = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
             failure = MagicMock(side_effect=OSError("Ack connection lost."))
+            monkeypatch.setattr(old.message, "ack", failure)
             with pytest.raises(OSError, match="Ack connection lost"):
-                await asyncio.wait_for(old.executor(failure), timeout=GET_TIMEOUT)
+                await asyncio.wait_for(old.settle(AckStatus.ACKED), timeout=GET_TIMEOUT)
 
             await _until(lambda: len(faults.connections) >= 2 and bridge.is_alive)
             publish(queue, "new")
             new = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
-            await new.executor(new.message.ack)
+            await new.settle(AckStatus.ACKED)
             assert new.message.decode() == "new"
         finally:
             await bridge.stop()

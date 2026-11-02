@@ -215,7 +215,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
         )
 
         with suppress(*SETTLE_ERRORS, IncorrectState):
-            await msg.executor(msg.message.ack)
+            await msg.settle(AckStatus.ACKED)
 
     @override
     async def consume(self, msg: ConsumerMessage) -> Optional["Response"]:
@@ -235,7 +235,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
             return
 
         with suppress(*SETTLE_ERRORS, IncorrectState):
-            await msg.executor(partial(msg.message.reject, requeue=False))
+            await msg.settle(AckStatus.REJECTED)
 
     async def consume_one(self, msg: ConsumerMessage) -> None:
         await self.consume(msg)

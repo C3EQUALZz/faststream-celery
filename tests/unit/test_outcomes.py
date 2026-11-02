@@ -1,6 +1,7 @@
 """Delivery control must not finish Celery results or run continuations."""
 
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from faststream.exceptions import (
@@ -217,3 +218,32 @@ async def test_manual_ack_does_not_hide_a_normal_task_outcome(
             canvas.mock.assert_called_once_with({"args": ["outcome-id"], "kwargs": {}})
         else:
             assert canvas.mock.call_count == 2
+
+
+@pytest.mark.asyncio()
+async def test_failed_ack_remains_eligible_for_redelivery(
+    queue: str,
+    publications: tuple[CeleryBroker, "CeleryPublisher", "CeleryPublisher"],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observer, reply, canvas = publications
+    broker = CeleryBroker(result_backend="redis://localhost")
+    subscriber = broker.subscriber(queue, ack_policy=AckPolicy.NACK_ON_ERROR)
+
+    @subscriber
+    async def handler(message: CeleryMessage) -> None:
+        await message.ack()
+
+    message = incoming()
+    raw = recorded(message)
+    monkeypatch.setattr(raw, "ack", MagicMock(side_effect=OSError("connection lost")))
+    async with TestCeleryBroker(broker, observer):
+        backend = broker.config.broker_config.result_backend
+        assert isinstance(backend, InMemoryResultBackend)
+        with pytest.raises(OSError, match="connection lost"):
+            await subscriber.process_message(message)
+        assert raw.acks == []
+        assert raw.rejects == [True]
+        assert backend.results == {}
+        reply.mock.assert_not_called()
+        canvas.mock.assert_not_called()

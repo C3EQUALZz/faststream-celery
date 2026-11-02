@@ -1,38 +1,33 @@
-from collections.abc import Awaitable, Callable
-from functools import partial
-from typing import Any, NamedTuple, TypeAlias
+import asyncio
+from typing import Any, NamedTuple
 
-from faststream.message import StreamMessage
+from faststream.message import AckStatus, StreamMessage
 from faststream.message.source_type import SourceType
 from kombu import Message
 from typing_extensions import override
 
+from faststream_celery.acknowledgement import Acknowledgement
 from faststream_celery.schemas.constants import CONTENT_ENCODING
-
-# Runs a kombu acknowledgement callable on the consumer thread that owns
-# the message's channel (kombu transports are not thread-safe).
-AckExecutor: TypeAlias = Callable[[Callable[[], None]], Awaitable[None]]
 
 
 class ConsumerMessage(NamedTuple):
-    """A kombu message handed over from the consumer thread to the event loop.
-
-    Carries the ack executor alongside the raw message so that
-    ``CeleryMessage`` can marshal acknowledgements back to the thread owning
-    the kombu channel.
-    """
+    """A payload with its delivery controller, or no controller for a result."""
 
     message: Message
-    executor: AckExecutor
+    acknowledgement: Acknowledgement | None = None
 
-
-async def run_inline(action: Callable[[], None]) -> None:  # ruff: ignore[unused-async]
-    """Ack executor for messages with no consumer thread to hop onto.
-
-    Used for RPC replies and by the in-memory test broker, where the
-    kombu object is either short-lived or a stand-in.
-    """
-    action()
+    async def settle(self, status: AckStatus) -> None:
+        """Wait for transport settlement, or complete a local delivery directly."""
+        acknowledgement = self.acknowledgement
+        if acknowledgement is None:
+            return
+        pending = (
+            acknowledgement.ack()
+            if status is AckStatus.ACKED
+            else acknowledgement.reject(requeue=status is AckStatus.NACKED)
+        )
+        if pending is not None:
+            await pending
 
 
 def local_message(
@@ -53,7 +48,6 @@ def local_message(
             content_encoding=CONTENT_ENCODING,
             properties={"correlation_id": correlation_id},
         ),
-        run_inline,
     )
 
 
@@ -69,7 +63,6 @@ class CeleryMessage(StreamMessage[ConsumerMessage]):
         raw_message: ConsumerMessage,
         body: bytes | Any,
         *,
-        ack_executor: AckExecutor,
         headers: dict[str, Any] | None = None,
         reply_to: str = "",
         content_type: str | None = None,
@@ -87,7 +80,7 @@ class CeleryMessage(StreamMessage[ConsumerMessage]):
             message_id=message_id,
             source_type=source_type,
         )
-        self._ack_executor = ack_executor
+        self._settlement_lock = asyncio.Lock()
 
     @property
     def kombu_message(self) -> Message:
@@ -97,20 +90,21 @@ class CeleryMessage(StreamMessage[ConsumerMessage]):
     @override
     async def ack(self) -> None:
         """Acknowledge the message (kombu ``basic_ack``)."""
-        if self.committed is None:
-            await super().ack()
-            await self._ack_executor(self.kombu_message.ack)
+        await self.settle(AckStatus.ACKED)
 
     @override
     async def nack(self) -> None:
         """Requeue the same delivery without changing Celery retries or ETA."""
-        if self.committed is None:
-            await super().nack()
-            await self._ack_executor(partial(self.kombu_message.reject, requeue=True))
+        await self.settle(AckStatus.NACKED)
 
     @override
     async def reject(self) -> None:
         """Reject the message without requeue."""
-        if self.committed is None:
-            await super().reject()
-            await self._ack_executor(partial(self.kombu_message.reject, requeue=False))
+        await self.settle(AckStatus.REJECTED)
+
+    async def settle(self, status: AckStatus) -> None:
+        """Commit successful settlement once, serializing competing calls."""
+        async with self._settlement_lock:
+            if self.committed is None:
+                await self.raw_message.settle(status)
+                self.committed = status

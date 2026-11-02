@@ -9,7 +9,7 @@ import anyio
 import anyio.to_thread
 from faststream.exceptions import FeatureNotSupportedException, IncorrectState
 from faststream.message import gen_cor_id
-from kombu import Connection, Consumer, Exchange, Producer, Queue
+from kombu import Connection, Consumer, Exchange, Message, Producer, Queue
 from typing_extensions import override
 
 from faststream_celery._internal import (
@@ -20,7 +20,7 @@ from faststream_celery._internal import (
     ProducerProto,
     dump_json,
 )
-from faststream_celery.message import ConsumerMessage, run_inline
+from faststream_celery.message import ConsumerMessage
 from faststream_celery.parser import CeleryParser
 from faststream_celery.response import CeleryPublishCommand
 from faststream_celery.schemas.constants import (
@@ -34,7 +34,6 @@ from faststream_celery.types import MutableHeaders, TaskBody
 
 if TYPE_CHECKING:
     from fast_depends.library.serializer import SerializerProto
-    from kombu import Message
 
     from faststream_celery._internal import CustomCallable
 
@@ -169,7 +168,7 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
             ),
         )
 
-        return ConsumerMessage(raw, run_inline)
+        return ConsumerMessage(raw)
 
     @override
     async def publish_batch(self, cmd: CeleryPublishCommand) -> None:
@@ -272,7 +271,7 @@ def request_sync(
     *,
     timeout: float,
 ) -> "Message":
-    """Publish and block until the matching reply lands on a temporary queue."""
+    """Wait for a terminal reply, acknowledge it and return a channel-free copy."""
     replies: deque[Message] = deque()
 
     with connection_factory() as connection:
@@ -325,7 +324,15 @@ def request_sync(
                         and result.get("task_id") == payload.correlation_id
                         and result.get("status") in READY_STATES
                     ):
-                        return reply
+                        reply.ack()
+                        return Message(
+                            body=reply.body,
+                            content_type=reply.content_type,
+                            content_encoding=reply.content_encoding,
+                            headers=dict(reply.headers or {}),
+                            properties=dict(reply.properties or {}),
+                            delivery_info=dict(reply.delivery_info or {}),
+                        )
                 reply.ack()
                 continue
 

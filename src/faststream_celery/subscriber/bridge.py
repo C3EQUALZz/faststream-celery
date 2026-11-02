@@ -143,15 +143,6 @@ class ConsumerBridge:
             if not session.closed:
                 return message
 
-    async def execute(self, action: Callable[[], None]) -> None:
-        """Run an ack callable on the consumer thread and await its completion."""
-        session = self._session
-        if session is None or not self.is_alive:
-            msg = "Consumer is not running."
-            raise IncorrectState(msg)
-
-        await session.execute(action)
-
     def _run(self, loop: asyncio.AbstractEventLoop) -> None:
         try:
             self._run_connections(loop)

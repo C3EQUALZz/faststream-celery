@@ -3,7 +3,8 @@
 import asyncio
 import queue
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import TYPE_CHECKING
 
 from faststream.exceptions import IncorrectState
@@ -49,11 +50,11 @@ class ConsumerSession:
         return self._closed.is_set()
 
     def on_message(self, message: "Message") -> None:
-        """Hand a delivery and its own session's executor to the event loop."""
+        """Hand a delivery and its session-bound acknowledgement to the event loop."""
         self.unsettled += 1
         self._loop.call_soon_threadsafe(
             self._messages.put_nowait,
-            (self, ConsumerMessage(message, self.execute)),
+            (self, ConsumerMessage(message, ConsumerAcknowledgement(message, self))),
         )
 
     async def execute(self, action: Callable[[], None]) -> None:
@@ -100,3 +101,17 @@ class ConsumerSession:
                     future,
                     IncorrectState("Consumer connection is closed."),
                 )
+
+
+class ConsumerAcknowledgement:
+    """Bind a delivery's settlement to the session owning its Kombu channel."""
+
+    def __init__(self, message: "Message", session: ConsumerSession) -> None:
+        self.message = message
+        self.session = session
+
+    def ack(self) -> Awaitable[None]:
+        return self.session.execute(self.message.ack)
+
+    def reject(self, *, requeue: bool = False) -> Awaitable[None]:
+        return self.session.execute(partial(self.message.reject, requeue=requeue))

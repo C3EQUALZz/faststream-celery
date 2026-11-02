@@ -8,7 +8,6 @@ to work with no AMQP exchange anywhere in sight.
 import asyncio
 import json
 from collections.abc import Mapping
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -240,11 +239,11 @@ class TestResultBackend(RequestTestcase, OutcomeTestcase):
         assert meta["date_done"]
 
     @pytest.mark.asyncio()
+    @pytest.mark.usefixtures("celery_worker")
     async def test_our_request_reads_a_celery_worker_result(
         self,
         broker: CeleryBroker,
         queue: str,
-        celery_worker: Path,  # ruff: ignore[unused-method-argument]
     ) -> None:
         """`broker.request()` waits on the backend, not a reply queue."""
         async with running(broker):

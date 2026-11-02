@@ -28,7 +28,7 @@ from faststream_celery._internal import (
 from faststream_celery.backend import InMemoryResultBackend
 from faststream_celery.broker import CeleryBroker
 from faststream_celery.configs import CeleryBrokerConfig
-from faststream_celery.message import ConsumerMessage, run_inline
+from faststream_celery.message import ConsumerMessage
 from faststream_celery.parser import CeleryParser, read_headers
 from faststream_celery.publisher.producer import CeleryFastProducer
 from faststream_celery.response import CeleryPublishCommand
@@ -116,7 +116,7 @@ async def build_message(  # ruff: ignore[too-many-arguments]
         delivery_tag=correlation_id,
     )
 
-    return ConsumerMessage(raw, run_inline)
+    return ConsumerMessage(raw, raw)
 
 
 @contextmanager
