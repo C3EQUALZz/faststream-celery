@@ -1,5 +1,5 @@
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -60,7 +60,7 @@ def test_failure_envelope_is_json_serializable() -> None:
 
 
 @asynccontextmanager
-async def _replies(broker: CeleryBroker) -> AsyncIterator[list[CeleryPublishCommand]]:
+async def _replies(broker: CeleryBroker) -> AsyncGenerator[list[CeleryPublishCommand]]:
     """Collect every reply the broker publishes while the block runs."""
     recorded: list[CeleryPublishCommand] = []
 
