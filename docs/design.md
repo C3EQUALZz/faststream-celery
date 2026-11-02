@@ -55,12 +55,26 @@ between competing worker processes. During migration, use separate queues and
 `task_routes` for different executor task sets. Sharing a queue requires every
 consumer to serve every task routed to it. See ADR-0003.
 
+Publisher endpoints apply configured exchange and routing-key defaults in both
+direct calls and subscriber decorators. Explicit command routing is preserved;
+an explicit `exchange=""` selects the AMQP default exchange.
+
 ### 5. Task results (full scope)
 
 - **AMQP RPC** (`reply_to` / `correlation_id`) — as a worker (we publish the
   reply) and as a client (`broker.request()`).
 - **Redis result backend** (`celery-task-meta-<id>`) — as a worker (we write
   status/result) and as a client (we read).
+
+`broker.request()` and `publisher.request()` share result selection in the
+producer. It waits on the configured backend, or uses an isolated RPC reply
+queue, and returns a detached payload. Both endpoints use FastStream's stock
+request middleware/parser pipeline. Publisher routing/header defaults and
+explicit call overrides apply to requests as they do to ordinary publishing.
+
+Subscriber `no_reply=True` disables automatic RPC replies for success and
+failure. It leaves backend result recording, callbacks/errbacks and explicit
+publisher decorators active. `ignore_result` remains a separate Celery header.
 
 For FastStream `Response` returns, result reporting and canvas use the body
 normalized through FastStream's public `ensure_response()`. The middleware

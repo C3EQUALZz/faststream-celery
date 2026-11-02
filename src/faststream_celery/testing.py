@@ -23,7 +23,6 @@ from faststream_celery._internal import (
     CallsCollection,
     DefaultCodec,
     EnterType,
-    ParserComposition,
     TestBroker,
     change_producer,
     dump_json,
@@ -34,7 +33,6 @@ from faststream_celery.broker import CeleryBroker
 from faststream_celery.configs import CeleryBrokerConfig
 from faststream_celery.exceptions import DECODE_ERRORS
 from faststream_celery.message import ConsumerMessage
-from faststream_celery.parser import CeleryParser
 from faststream_celery.publisher.producer import (
     DEFAULT_REQUEST_TIMEOUT,
     CeleryFastProducer,
@@ -170,24 +168,19 @@ class FakeProducer(CeleryFastProducer):
         reply_queues: dict[str, PendingReply],
         request_tasks: set[asyncio.Task[Any]],
     ) -> None:
+        super().__init__(
+            parser=broker.config.broker_parser,
+            decoder=broker.config.broker_decoder,
+            id_generator=broker.config.id_generator,
+        )
         self.broker = broker
         self.brokers = brokers
         self._reply_queues = reply_queues
         self._request_tasks = request_tasks
 
-        default = CeleryParser()
-        self._parser = ParserComposition(
-            broker.config.broker_parser,
-            default.parse_message,
-        )
-        self._decoder = ParserComposition(
-            broker.config.broker_decoder,
-            default.decode_message,
-        )
-        self._id_generator = broker.config.id_generator
-
         self.codec = broker.config.broker_codec or DefaultCodec()
         self.serializer = resolve_serializer(broker.config.fd_config)
+        self._result_backend = broker.config.broker_config.result_backend
 
     @property
     def subscribers(self) -> Iterator[CelerySubscriber]:
@@ -231,7 +224,7 @@ class FakeProducer(CeleryFastProducer):
             raise SubscriberNotFound
 
     @override
-    async def request(self, cmd: CeleryPublishCommand) -> ConsumerMessage:
+    async def request_via_rpc(self, cmd: CeleryPublishCommand) -> ConsumerMessage:
         timeout = DEFAULT_REQUEST_TIMEOUT if cmd.timeout is None else cmd.timeout
         task_id = cmd.correlation_id or self._id_generator()
         reply_queue = f"faststream-celery.reply.{gen_cor_id()}"
@@ -352,6 +345,7 @@ class TestCeleryBroker(TestBroker[CeleryBroker, EnterType]):
         config = broker.config.broker_config
 
         with (
+            change_result_backend(config),
             change_producer(
                 config,
                 FakeProducer(
@@ -361,7 +355,6 @@ class TestCeleryBroker(TestBroker[CeleryBroker, EnterType]):
                     request_tasks=self._request_tasks,
                 ),
             ),
-            change_result_backend(config),
         ):
             yield
 

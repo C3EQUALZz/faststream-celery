@@ -104,9 +104,19 @@ result = await response.decode()  # {"status": "SUCCESS", "result": 5, ...}
 Without a result backend that waits on a temporary AMQP reply queue. With one it
 reads `celery-task-meta-<id>`, exactly as `AsyncResult.get()` does.
 
+`publisher.request(...)` uses the same result mechanism as `broker.request(...)`.
+It applies the endpoint's queue, exchange, routing key and header defaults;
+arguments supplied to the call take precedence. Its configured `reply_to` is
+used only by ordinary publishing: each RPC request gets its own reply queue.
+
 `request()` waits for `SUCCESS`, `FAILURE` or `REVOKED`. Intermediate states
 such as `STARTED`, `RETRY` and custom progress states keep waiting within the
 same timeout. A failure or revocation is returned as its Celery result envelope.
+
+Subscriber `no_reply=True` suppresses automatic success and failure replies.
+Configured result backends still record outcomes, canvas continuations run,
+and explicit publisher decorators publish normally. Requests through a result
+backend can still complete; RPC requests without a reply time out.
 
 Handlers may return a FastStream `Response`: its body becomes the Celery result
 and the value passed to callbacks and chain steps. Its headers and correlation

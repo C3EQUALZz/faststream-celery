@@ -65,6 +65,7 @@ class CeleryBrokerConfig(BrokerConfig):
             connection_factory=self.make_connection,
             serializer=resolve_serializer(self.fd_config),
             codec=self.broker_codec or DefaultCodec(),
+            result_backend=self.result_backend,
         )
 
         if self.result_backend is not None:

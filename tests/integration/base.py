@@ -164,6 +164,76 @@ class OutcomeTestcase:
                 with suppress(NotImplementedError):
                     await asyncio.to_thread(result.forget)
 
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("no_reply", (False, True))
+    @pytest.mark.parametrize("fail", (False, True))
+    async def test_no_reply_preserves_backend_results_and_canvas(  # ruff: ignore[too-many-arguments]
+        self,
+        broker: CeleryBroker,
+        celery_app: Celery,
+        queue: str,
+        our_queue: str,
+        celery_worker: Path,
+        *,
+        no_reply: bool,
+        fail: bool,
+    ) -> None:
+        observer = CeleryBroker(broker.config.broker_config.url)
+        reply_queue = f"{queue}.replies"
+        replies = observer.subscriber(reply_queue)
+
+        @broker.subscriber(our_queue, task="tests.no_reply", no_reply=no_reply)
+        async def handler() -> int:
+            if fail:
+                error = "task failed"
+                raise ValueError(error)
+            return 7
+
+        continuation = celery_app.signature("tests.echo", queue=queue)
+        async with running(broker), running(observer):
+            result = celery_app.send_task(
+                "tests.no_reply",
+                queue=our_queue,
+                reply_to=reply_queue,
+                link=None if fail else continuation,
+                link_error=continuation if fail else None,
+            )
+            try:
+                entries = await asyncio.to_thread(wait_for_log, celery_worker)
+                assert entries == [
+                    {"task": "tests.echo", "payload": result.id if fail else 7},
+                ]
+
+                # The continuation runs after result reporting and reply publication.
+                reply = await replies.get_one(
+                    timeout=0.2 if no_reply else CONSUME_TIMEOUT,
+                )
+                if no_reply:
+                    assert reply is None
+                else:
+                    assert reply is not None
+                    envelope = await reply.decode()
+                    assert isinstance(envelope, dict)
+                    assert envelope["task_id"] == result.id
+                    assert envelope["status"] == ("FAILURE" if fail else "SUCCESS")
+                    await reply.ack()
+
+                if (backend := broker.config.broker_config.result_backend) is not None:
+                    recorded = await backend.load(result.id)
+                    assert recorded is not None
+                    assert recorded["status"] == ("FAILURE" if fail else "SUCCESS")
+                    if fail:
+                        error = recorded["result"]
+                        assert isinstance(error, dict)
+                        assert error["exc_type"] == "ValueError"
+                        assert error["exc_message"] == ["task failed"]
+                    else:
+                        assert recorded["result"] == 7
+            finally:
+                with suppress(NotImplementedError):
+                    await asyncio.to_thread(result.forget)
+                del result
+
 
 class RequestTestcase:
     """Terminal result waiting with a real Celery worker on either backend."""
@@ -171,13 +241,17 @@ class RequestTestcase:
     @pytest.mark.asyncio()
     @pytest.mark.parametrize("fake", (False, True))
     @pytest.mark.parametrize("fail", (False, True))
+    @pytest.mark.parametrize("api", ("broker", "publisher"))
     async def test_request_outcome_matches_in_fake_and_live_modes(
         self,
         broker: CeleryBroker,
         queue: str,
         fake: bool,
         fail: bool,
+        api: str,
     ) -> None:
+        client = broker.publisher(queue) if api == "publisher" else broker
+
         @broker.subscriber(queue, task="tests.outcome")
         async def handler() -> Response:
             if fail:
@@ -187,7 +261,7 @@ class RequestTestcase:
 
         context = TestCeleryBroker(broker) if fake else running(broker)
         async with context:
-            response = await broker.request(
+            response = await client.request(
                 CeleryTask("tests.outcome"),
                 queue=queue,
                 correlation_id=f"{queue}-result",
@@ -206,15 +280,18 @@ class RequestTestcase:
 
     @pytest.mark.asyncio()
     @pytest.mark.parametrize("operation", ("ack", "nack", "reject"))
+    @pytest.mark.parametrize("api", ("broker", "publisher"))
     @pytest.mark.usefixtures("celery_worker")
     async def test_request_result_is_detached_from_transport_settlement(
         self,
         broker: CeleryBroker,
         queue: str,
         operation: str,
+        api: str,
     ) -> None:
+        client = broker.publisher(queue) if api == "publisher" else broker
         async with running(broker):
-            response = await broker.request(
+            response = await client.request(
                 CeleryTask("tests.add", args=[2, 3]),
                 queue=queue,
                 timeout=WORKER_TIMEOUT,
@@ -229,15 +306,18 @@ class RequestTestcase:
 
     @pytest.mark.asyncio()
     @pytest.mark.parametrize("fail", (False, True))
+    @pytest.mark.parametrize("api", ("broker", "publisher"))
     @pytest.mark.usefixtures("celery_worker")
     async def test_request_waits_through_worker_progress_and_retry(
         self,
         broker: CeleryBroker,
         queue: str,
         fail: bool,
+        api: str,
     ) -> None:
+        client = broker.publisher(queue) if api == "publisher" else broker
         async with running(broker):
-            response = await broker.request(
+            response = await client.request(
                 CeleryTask("tests.progress", kwargs={"fail": fail}),
                 queue=queue,
                 correlation_id=f"{queue}-result",
@@ -256,22 +336,62 @@ class RequestTestcase:
             assert envelope["result"] == 7
 
     @pytest.mark.asyncio()
+    @pytest.mark.parametrize("api", ("broker", "publisher"))
     @pytest.mark.usefixtures("celery_worker")
     async def test_request_times_out_while_the_worker_is_retrying(
         self,
         broker: CeleryBroker,
         queue: str,
+        api: str,
     ) -> None:
+        client = broker.publisher(queue) if api == "publisher" else broker
         async with running(broker):
             with pytest.raises(TimeoutError, match=r"No Celery (reply|result)"):
                 await asyncio.wait_for(
-                    broker.request(
+                    client.request(
                         CeleryTask("tests.progress", kwargs={"retry_delay": 5}),
                         queue=queue,
                         timeout=0.3,
                     ),
                     timeout=2,
                 )
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("override", (False, True))
+    @pytest.mark.usefixtures("celery_worker")
+    async def test_publisher_request_uses_the_configured_route_or_an_override(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        override: bool,
+    ) -> None:
+        exchange = f"{queue}.exchange"
+        routing_key = f"{queue}.route"
+        publisher = broker.publisher(
+            f"{queue}.unused" if override else queue,
+            exchange=exchange,
+            routing_key=routing_key,
+            reply_to="unused-reply-queue",
+        )
+        async with running(broker):
+            response = await publisher.request(
+                CeleryTask("tests.delivery_info", args=[7]),
+                queue=queue if override else None,
+                exchange="" if override else None,
+                routing_key=queue if override else None,
+                correlation_id=f"{queue}-result",
+                timeout=WORKER_TIMEOUT,
+            )
+            envelope = await response.decode()
+
+        assert isinstance(envelope, dict)
+        assert envelope["task_id"] == response.correlation_id == f"{queue}-result"
+        assert envelope["status"] == "SUCCESS"
+        assert envelope["result"] == {
+            "payload": 7,
+            "exchange": "" if override else exchange,
+            "routing_key": queue if override else routing_key,
+        }
 
 
 class TransportTestcase:
@@ -393,6 +513,45 @@ class TransportTestcase:
 
         assert wait_for_log(celery_worker) == [
             {"task": "tests.echo", "payload": "hello"},
+        ]
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("operation", ("publish", "decorator"))
+    async def test_publisher_routing_reaches_a_celery_worker(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        our_queue: str,
+        celery_worker: Path,
+        operation: str,
+    ) -> None:
+        exchange = f"{queue}.exchange"
+        routing_key = f"{queue}.route"
+        publisher = broker.publisher(queue, exchange=exchange, routing_key=routing_key)
+
+        @broker.subscriber(our_queue, task="tests.forward")
+        @publisher
+        async def forward() -> Response:
+            return Response(CeleryTask("tests.delivery_info", args=[7]))
+
+        async with running(broker):
+            if operation == "publish":
+                await publisher.publish(
+                    CeleryTask("tests.delivery_info", args=[7]),
+                    exchange="",
+                    routing_key=queue,
+                )
+                exchange, routing_key = "", queue
+            else:
+                await broker.publish(CeleryTask("tests.forward"), queue=our_queue)
+            entries = await asyncio.to_thread(wait_for_log, celery_worker)
+
+        assert entries == [
+            {
+                "payload": 7,
+                "exchange": exchange,
+                "routing_key": routing_key,
+            },
         ]
 
     @pytest.mark.asyncio()

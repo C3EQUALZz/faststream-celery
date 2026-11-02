@@ -9,7 +9,7 @@ from faststream.middlewares import AckPolicy, BaseMiddleware
 from faststream.response import PublishType, ensure_response
 from typing_extensions import override
 
-from faststream_celery._internal import get_ack_policy
+from faststream_celery._internal import get_subscriber
 from faststream_celery.canvas import CanvasDispatcher
 from faststream_celery.message import ConsumerMessage
 from faststream_celery.parser import read_embed
@@ -92,7 +92,10 @@ class CeleryResultMiddleware(
         if msg.committed in {AckStatus.NACKED, AckStatus.REJECTED}:
             return False
         if failed and msg.committed is None:
-            return get_ack_policy(self.context) is not AckPolicy.NACK_ON_ERROR
+            subscriber = get_subscriber(self.context)
+            return (
+                subscriber is None or subscriber.ack_policy is not AckPolicy.NACK_ON_ERROR
+            )
         return True
 
     async def _report(
@@ -108,7 +111,11 @@ class CeleryResultMiddleware(
         if (backend := self._config.result_backend) is not None:
             await backend.store(envelope["task_id"], envelope)
 
-        if reply and msg.reply_to:
+        if not reply or not msg.reply_to:
+            return
+
+        subscriber = get_subscriber(self.context)
+        if subscriber is None or not subscriber.config.no_reply:
             await self._publish_reply(msg.reply_to, envelope)
 
     async def _publish_reply(self, reply_to: str, envelope: TaskResult) -> None:

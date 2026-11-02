@@ -20,10 +20,11 @@ from faststream_celery._internal import (
     ProducerProto,
     dump_json,
 )
-from faststream_celery.message import ConsumerMessage
+from faststream_celery.message import ConsumerMessage, local_message
 from faststream_celery.parser import CeleryParser
 from faststream_celery.response import CeleryPublishCommand
 from faststream_celery.schemas.constants import (
+    CONTENT_TYPE,
     PERSISTENT_DELIVERY_MODE,
     SERIALIZATION_ACCEPT,
     SERIALIZER,
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from fast_depends.library.serializer import SerializerProto
 
     from faststream_celery._internal import CustomCallable
+    from faststream_celery.backend import ResultBackend
 
 DEFAULT_REQUEST_TIMEOUT: Final[float] = 30.0
 
@@ -88,6 +90,7 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
         self._connection_factory: ConnectionFactory | None = None
         self._producer: Producer | None = None
         self._lock: anyio.Lock | None = None
+        self._result_backend: ResultBackend | None = None
 
     @property
     def parser(self) -> ParserComposition:
@@ -106,6 +109,7 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
         connection_factory: ConnectionFactory,
         serializer: Optional["SerializerProto"] = None,
         codec: CodecProto | None = None,
+        result_backend: Optional["ResultBackend"] = None,
     ) -> None:
         self._connection = connection
         self._connection_factory = connection_factory
@@ -113,11 +117,13 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
         self._lock = anyio.Lock()
         self.serializer = serializer
         self.codec = codec or DefaultCodec()
+        self._result_backend = result_backend
 
     async def disconnect(self) -> None:
         connection, self._connection = self._connection, None
         self._producer = None
         self._connection_factory = None
+        self._result_backend = None
         if connection is not None:
             await anyio.to_thread.run_sync(connection.close)
 
@@ -144,6 +150,25 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
 
     @override
     async def request(self, cmd: CeleryPublishCommand) -> ConsumerMessage:
+        """Wait for a terminal result through the configured backend or RPC."""
+        backend = self._result_backend
+        if backend is None:
+            return await self.request_via_rpc(cmd)
+
+        task_id = cmd.correlation_id or self._id_generator()
+        cmd.correlation_id = task_id
+        await self.publish(cmd)
+        envelope = await backend.wait(
+            task_id,
+            timeout=DEFAULT_REQUEST_TIMEOUT if cmd.timeout is None else cmd.timeout,
+        )
+        return local_message(
+            dump_json(envelope),
+            content_type=CONTENT_TYPE,
+            correlation_id=task_id,
+        )
+
+    async def request_via_rpc(self, cmd: CeleryPublishCommand) -> ConsumerMessage:
         """Publish a task and wait for its Celery reply over AMQP RPC.
 
         The request runs on its own short-lived connection: it declares an

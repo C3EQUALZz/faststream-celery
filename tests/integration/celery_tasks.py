@@ -57,6 +57,18 @@ def add(x: int, y: int) -> int:
     return x + y
 
 
+@app.task(bind=True, name="tests.delivery_info")
+def delivery_info(task: Any, payload: Any) -> dict[str, Any]:
+    """Record the actual route used by a publisher endpoint."""
+    delivery = {
+        "payload": payload,
+        "exchange": task.request.delivery_info["exchange"],
+        "routing_key": task.request.delivery_info["routing_key"],
+    }
+    record(delivery)
+    return delivery
+
+
 @app.task(name="tests.fail")
 def fail(message: str = "boom") -> None:
     """Always raise, so failure propagation can be tested."""

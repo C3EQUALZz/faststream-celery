@@ -1,7 +1,6 @@
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Union
 
-from faststream.exceptions import FeatureNotSupportedException
 from faststream.response import PublishCommand, PublishType
 from typing_extensions import override
 
@@ -57,7 +56,7 @@ class CeleryPublisher(PublisherUsecase):
         cmd = CeleryPublishCommand(
             message,
             queue=queue or self.queue,
-            exchange=exchange or self.exchange,
+            exchange=self.exchange if exchange is None else exchange,
             routing_key=routing_key or self.routing_key,
             headers=self.headers | (headers or {}),
             correlation_id=correlation_id or self._outer_config.id_generator(),
@@ -80,6 +79,11 @@ class CeleryPublisher(PublisherUsecase):
         """This method should be called in subscriber flow only."""
         cmd = CeleryPublishCommand.from_cmd(cmd, queue=self.queue)
 
+        if cmd.exchange is None:
+            cmd.exchange = self.exchange
+        if cmd.routing_key is None:
+            cmd.routing_key = self.routing_key
+
         cmd.add_headers(self.headers, override=False)
         cmd.reply_to = cmd.reply_to or self.reply_to
 
@@ -95,9 +99,29 @@ class CeleryPublisher(PublisherUsecase):
         message: CelerySendableMessage = None,
         queue: str | None = None,
         *,
+        exchange: str | None = None,
+        routing_key: str | None = None,
         correlation_id: str | None = None,
         headers: MutableHeaders | None = None,
         timeout: float | None = 30.0,
     ) -> "CeleryMessage":
-        msg = "CeleryBroker doesn't support RPC requests yet."
-        raise FeatureNotSupportedException(msg)
+        """Publish with endpoint defaults and wait for a terminal Celery result.
+
+        Uses the broker's configured result backend, or a temporary RPC reply
+        queue. The endpoint's reply_to is reserved for ordinary publishing.
+        """
+        cmd = CeleryPublishCommand(
+            message,
+            queue=queue or self.queue,
+            exchange=self.exchange if exchange is None else exchange,
+            routing_key=routing_key or self.routing_key,
+            headers=self.headers | (headers or {}),
+            correlation_id=correlation_id or self._outer_config.id_generator(),
+            timeout=timeout,
+            _publish_type=PublishType.REQUEST,
+        )
+        msg: CeleryMessage = await self._basic_request(
+            cmd,
+            producer=self._outer_config.producer,
+        )
+        return msg
