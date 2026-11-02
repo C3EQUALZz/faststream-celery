@@ -25,7 +25,7 @@ from faststream.exceptions import (
 from faststream.middlewares import AckPolicy
 from faststream.response import Response
 
-from faststream_celery import CeleryBroker, CeleryTask, signature
+from faststream_celery import CeleryBroker, CeleryTask, TestCeleryBroker, signature
 from faststream_celery.annotations import CeleryMessage
 from tests.helpers import ConnectionFaults, running
 
@@ -167,6 +167,42 @@ class OutcomeTestcase:
 
 class RequestTestcase:
     """Terminal result waiting with a real Celery worker on either backend."""
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("fake", (False, True))
+    @pytest.mark.parametrize("fail", (False, True))
+    async def test_request_outcome_matches_in_fake_and_live_modes(
+        self,
+        broker: CeleryBroker,
+        queue: str,
+        fake: bool,
+        fail: bool,
+    ) -> None:
+        @broker.subscriber(queue, task="tests.outcome")
+        async def handler() -> Response:
+            if fail:
+                error = "request failed"
+                raise ValueError(error)
+            return Response(7, correlation_id="outgoing-id")
+
+        context = TestCeleryBroker(broker) if fake else running(broker)
+        async with context:
+            response = await broker.request(
+                CeleryTask("tests.outcome"),
+                queue=queue,
+                correlation_id=f"{queue}-result",
+                timeout=CONSUME_TIMEOUT,
+            )
+            envelope = await response.decode()
+            assert isinstance(envelope, dict)
+            assert envelope["task_id"] == response.correlation_id == f"{queue}-result"
+            assert envelope["status"] == ("FAILURE" if fail else "SUCCESS")
+            if fail:
+                assert envelope["result"]["exc_type"] == "ValueError"
+                assert envelope["result"]["exc_message"] == ["request failed"]
+            else:
+                assert envelope["result"] == 7
+            assert response.raw_message.acknowledgement is None
 
     @pytest.mark.asyncio()
     @pytest.mark.parametrize("operation", ("ack", "nack", "reject"))

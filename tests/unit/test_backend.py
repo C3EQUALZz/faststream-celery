@@ -349,8 +349,10 @@ class TestTheTestBrokerFakesTheBackend:
 
             response = await broker.request(CeleryTask("proj.tasks.add"), queue=queue)
 
-            # The handler's return value, not a result envelope.
-            assert await response.decode() == 3
+            envelope = await response.decode()
+            assert isinstance(envelope, dict)
+            assert envelope["status"] == "SUCCESS"
+            assert envelope["result"] == 3
 
     @pytest.mark.asyncio()
     async def test_request_reads_the_result_out_of_the_backend(

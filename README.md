@@ -173,6 +173,11 @@ async def test_send_email() -> None:
 
 Assert inside the block: the mocks are reset on the way out.
 
+`request()` returns the same Celery result envelope in fake mode as with a real
+broker, including `FAILURE` for handler errors. An ordinary test `publish()`
+still raises handler exceptions. Requests with no result time out; unfinished
+request handlers are cancelled when the test broker exits.
+
 A broker configured with `result_backend=` works there too — the backend is
 swapped for an in-memory one, so results are recorded and `request()` reads
 them back with no Redis to run:
