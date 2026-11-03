@@ -47,6 +47,7 @@ class RedisChordTestcase:
     @pytest.mark.asyncio()
     @pytest.mark.parametrize("last", ("faststream", "celery"))
     @pytest.mark.parametrize("body_executor", ("faststream", "celery"))
+    @pytest.mark.parametrize("saved", (False, True))
     async def test_mixed_chord_success(  # ruff: ignore[too-many-arguments]
         self,
         broker_url: str,
@@ -59,6 +60,7 @@ class RedisChordTestcase:
         celery_worker: Path,
         last: str,
         body_executor: str,
+        saved: bool,
     ) -> None:
         broker = CeleryBroker(broker_url, result_backend=result_backend)
         observed: list[list[str]] = []
@@ -100,16 +102,33 @@ class RedisChordTestcase:
         )
 
         async with running(broker):
+            if saved:
+                frozen = workflow.freeze()
+                header = frozen.parent
+                assert isinstance(header, GroupResult)
+                assert header.results is not None
+                # Saved order is authoritative even when journal scores disagree.
+                GroupResult(
+                    header.id,
+                    list(reversed(header.results)),
+                    app=celery_app,
+                ).save()
             result = workflow.apply_async()
-            assert await asyncio.to_thread(
-                result.get,
-                timeout=CONSUME_TIMEOUT,
-                follow_parents=False,
-            ) == ["faststream", "celery"]
+            expected = ["celery", "faststream"] if saved else ["faststream", "celery"]
+            assert (
+                await asyncio.to_thread(
+                    result.get,
+                    timeout=CONSUME_TIMEOUT,
+                    follow_parents=False,
+                )
+                == expected
+            )
+            if saved:
+                assert isinstance(header, GroupResult)
+                assert await chord_store.exists(f"{GROUP_PREFIX}{header.id}")
 
         entries = read_log(celery_worker)
         assert entries.count({"task": "tests.echo", "payload": "celery"}) == 1
-        expected = ["faststream", "celery"]
         if body_executor == "faststream":
             assert observed == [expected]
             assert len(entries) == 1
@@ -120,6 +139,7 @@ class RedisChordTestcase:
     @pytest.mark.asyncio()
     @pytest.mark.parametrize("last", ("faststream", "celery"))
     @pytest.mark.parametrize("failed_executor", ("faststream", "celery"))
+    @pytest.mark.parametrize("saved", (False, True))
     async def test_mixed_chord_failure(  # ruff: ignore[too-many-arguments]
         self,
         broker_url: str,
@@ -132,6 +152,7 @@ class RedisChordTestcase:
         celery_worker: Path,
         last: str,
         failed_executor: str,
+        saved: bool,
     ) -> None:
         broker = CeleryBroker(broker_url, result_backend=result_backend)
         error_ids: list[str] = []
@@ -170,8 +191,12 @@ class RedisChordTestcase:
         )
 
         async with running(broker):
+            if saved:
+                frozen = workflow.freeze()
+                assert isinstance(frozen.parent, GroupResult)
+                frozen.parent.save()
             result = workflow.apply_async()
-            with pytest.raises(ChordError, match="Dependency"):
+            with pytest.raises(ChordError, match="header failed"):
                 await asyncio.to_thread(
                     result.get,
                     timeout=CONSUME_TIMEOUT,
@@ -184,6 +209,71 @@ class RedisChordTestcase:
         assert len(read_log(celery_worker)) == 1
 
     @pytest.mark.asyncio()
+    @pytest.mark.usefixtures("celery_worker")
+    async def test_saved_chord_missing_result_fails_body(  # ruff: ignore[too-many-arguments]
+        self,
+        broker_url: str,
+        result_backend: str,
+        celery_app: Celery,
+        queue: str,
+        our_queue: str,
+        *,
+        chord_store: Redis,
+    ) -> None:
+        broker = CeleryBroker(broker_url, result_backend=result_backend)
+        backend = broker.config.broker_config.result_backend
+        assert isinstance(backend, RedisResultBackend)
+        backend.chord_join_timeout = 0.05
+        handled = asyncio.Event()
+        error_ids: list[str] = []
+
+        @broker.subscriber(our_queue, task="tests.chord_part")
+        async def part(message: CeleryMessage) -> str:
+            await wait_for_part(chord_store, message.headers["group"])
+            await chord_store.delete(backend.key_for(missing_id))
+            return "faststream"
+
+        @broker.subscriber(our_queue, task="tests.chord_error")
+        async def error_handler(args: list[str], kwargs: dict[str, Any]) -> None:
+            error_ids.append(args[0])
+            handled.set()
+
+        workflow = chord(
+            [
+                celery_app.signature("tests.chord_part", queue=our_queue),
+                celery_app.signature("tests.echo", args=["celery"], queue=queue),
+            ],
+            celery_app.signature(
+                "tests.echo",
+                queue=queue,
+                link_error=[celery_app.signature("tests.chord_error", queue=our_queue)],
+            ),
+        )
+        frozen = workflow.freeze()
+        header = frozen.parent
+        assert isinstance(header, GroupResult)
+        assert header.results is not None
+        missing_id = header.results[1].id
+        header.save()
+
+        async with running(broker):
+            result = workflow.apply_async()
+            with pytest.raises(ChordError, match="Join error"):
+                await asyncio.to_thread(
+                    result.get,
+                    timeout=CONSUME_TIMEOUT,
+                    follow_parents=False,
+                )
+            await asyncio.wait_for(handled.wait(), timeout=CONSUME_TIMEOUT)
+            assert error_ids == [result.id]
+            assert result.state == "FAILURE"
+            part_result = await backend.load(header.results[0].id)
+            assert part_result is not None
+            assert part_result["status"] == "SUCCESS"
+            assert await chord_store.exists(f"{GROUP_PREFIX}{header.id}")
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("saved", (False, True))
     async def test_mixed_chord_recovers_after_interrupted_join(  # ruff: ignore[too-many-arguments]
         self,
         broker_url: str,
@@ -195,6 +285,7 @@ class RedisChordTestcase:
         chord_store: Redis,
         celery_worker: Path,
         monkeypatch: pytest.MonkeyPatch,
+        saved: bool,
     ) -> None:
         broker = CeleryBroker(broker_url, result_backend=result_backend)
         attempts = 0
@@ -230,12 +321,17 @@ class RedisChordTestcase:
             assert isinstance(backend, RedisResultBackend)
             client = backend._client
             assert client is not None
+            method = "mget" if saved else "zrange"
             interrupted_read = Mock(
-                wraps=client.zrange,
+                wraps=getattr(client, method),
                 side_effect=[RedisConnectionError("interrupted join"), DEFAULT],
             )
-            monkeypatch.setattr(client, "zrange", interrupted_read)
+            monkeypatch.setattr(client, method, interrupted_read)
 
+            if saved:
+                frozen = workflow.freeze()
+                assert isinstance(frozen.parent, GroupResult)
+                frozen.parent.save()
             result = workflow.apply_async()
             assert await asyncio.to_thread(
                 result.get,

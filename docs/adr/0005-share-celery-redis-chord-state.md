@@ -23,8 +23,11 @@ Kombu's JSON encoder preserves the journal member format. An optional
 ordinary result backends need not provide chord coordination.
 
 The initial contract covers flat task headers and ordinary task callbacks,
-default key prefixes and `result_chord_ordered=True`. Saved/nested group
-structures and existing unordered journals are rejected explicitly. All workers
+default key prefixes and `result_chord_ordered=True`. Saved flat groups are now
+joined asynchronously from task metadata in their persisted order, using the
+default three-second group join timeout. Their header tasks must store results.
+The saved group metadata survives coordination cleanup. Nested group structures
+and existing unordered journals are rejected explicitly. All workers
 must agree on ordered mode; it cannot be inferred before a journal exists.
 Chord failures
 complete the frozen body with Celery's `ChordError` and dispatch queued errbacks.

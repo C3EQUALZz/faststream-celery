@@ -12,7 +12,7 @@ from faststream.exceptions import IncorrectState, SetupError
 from faststream.response import PublishType
 
 from faststream_celery.backend.proto import ChordBackend
-from faststream_celery.exceptions import PUBLISH_ERRORS
+from faststream_celery.exceptions import PUBLISH_ERRORS, ChordJoinError
 from faststream_celery.response import CeleryPublishCommand
 from faststream_celery.schemas.constants import SERIALIZER
 from faststream_celery.schemas.result import (
@@ -96,11 +96,17 @@ class CanvasDispatcher:
             error = "Mixed chords require a Redis result backend."
             raise SetupError(error)
 
-        parts = await backend.record_chord_part(
-            group_id,
-            part_options.get("group_index"),
-            result,
-        )
+        try:
+            parts = await backend.record_chord_part(
+                group_id,
+                part_options.get("group_index"),
+                result,
+            )
+        except ChordJoinError as exc:
+            failure = build_chord_failure(callback_id, exc)
+            await self._fail_chord(msg, callback, failure, queue=queue)
+            await backend.clear_chord(group_id)
+            return
         if parts is None:
             return
 

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Final, Literal, NamedTuple, TypeAlias
 from typing_extensions import TypedDict
 
 from faststream_celery._internal import SendableMessage
+from faststream_celery.exceptions import ChordJoinError
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Sequence
@@ -51,7 +52,7 @@ class TaskResult(TypedDict):
 
 
 class ChordResult(NamedTuple):
-    """One terminal result from Celery's ordered Redis chord journal."""
+    """One terminal result from a Celery chord journal or saved group."""
 
     task_id: str
     status: str
@@ -89,7 +90,7 @@ def build_failure(task_id: str, exc: BaseException) -> TaskResult:
 
 
 def build_chord_failure(task_id: str, cause: ChordResult | Exception) -> TaskResult:
-    """Report a chord dependency or dispatch failure to a Celery client."""
+    """Report a chord dependency, join or dispatch failure to a Celery client."""
     if isinstance(cause, ChordResult):
         value = cause.result
         if isinstance(value, dict):
@@ -103,6 +104,8 @@ def build_chord_failure(task_id: str, cause: ChordResult | Exception) -> TaskRes
         else:
             detail = repr(value)
         message = f"Dependency {cause.task_id} raised {detail}"
+    elif isinstance(cause, ChordJoinError):
+        message = f"Join error: {cause}"
     else:
         message = f"Callback error: {cause!r}"
 

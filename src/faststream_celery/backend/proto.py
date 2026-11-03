@@ -16,7 +16,11 @@ class ChordBackend(Protocol):
         group_index: int | None,
         result: "TaskResult",
     ) -> "list[ChordResult] | None":
-        """Record a part and return ordered results when the group is complete."""
+        """Record a part and return ordered results when the group is complete.
+
+        Raise ``ChordJoinError`` for a terminal join failure, leaving transient
+        connection failures to the subscriber's acknowledgement policy.
+        """
         ...
 
     async def clear_chord(self, group_id: str) -> None:

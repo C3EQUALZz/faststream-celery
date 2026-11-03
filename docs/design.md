@@ -174,7 +174,17 @@ cleanup can republish a callback. A failed dependency produces
 `celery.exceptions.ChordError`
 for the frozen body id and invokes its queued errbacks; the body is not executed.
 
-Saved/nested group structures and existing unordered journals raise `SetupError`.
+Saved flat `GroupResult` headers use the persisted task ids and order. After
+the journal reaches the expected size, the coordinator reads terminal results
+from individual task metadata keys, matching Celery's restored-group join.
+The asynchronous join has one timeout for the entire group (three seconds by
+default), rather than one timeout per task. Missing or nonterminal metadata
+is polled within that deadline; expiry produces a body `ChordError` and queued
+errbacks. Header tasks must store results when their group is saved. Transient
+Redis read failures still follow the subscriber's acknowledgement policy.
+Cleanup removes coordination keys but retains the saved `GroupResult`.
+
+Nested group structures and existing unordered journals raise `SetupError`.
 Every worker must use ordered mode. An absent journal does not reveal a peer's
 mode, so mismatched configuration cannot always be detected before a write.
 Nested groups, other backend settings and `chord_unlock` backends remain

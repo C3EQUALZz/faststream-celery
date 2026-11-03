@@ -16,7 +16,8 @@ from kombu.utils.json import (
 )
 
 from faststream_celery._internal import dump_json
-from faststream_celery.schemas.result import READY_STATES, ChordResult
+from faststream_celery.exceptions import ChordJoinError
+from faststream_celery.schemas.result import FAILURE, READY_STATES, REVOKED, ChordResult
 
 try:
     from redis.asyncio import Redis
@@ -39,6 +40,7 @@ GROUP_PREFIX: Final[str] = "celery-taskset-meta-"
 DEFAULT_EXPIRES: Final[int] = 86400
 
 DEFAULT_POLL_INTERVAL: Final[float] = 0.05
+DEFAULT_CHORD_JOIN_TIMEOUT: Final[float] = 3.0
 
 
 class RedisResultBackend:
@@ -50,10 +52,12 @@ class RedisResultBackend:
         *,
         expires: int = DEFAULT_EXPIRES,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
+        chord_join_timeout: float = DEFAULT_CHORD_JOIN_TIMEOUT,
     ) -> None:
         self.url = url
         self.expires = expires
         self.poll_interval = poll_interval
+        self.chord_join_timeout = chord_join_timeout
 
         self._client: Redis | None = None
 
@@ -123,9 +127,6 @@ class RedisResultBackend:
         group_key = f"{GROUP_PREFIX}{group_id}"
         journal, difference, size = f"{group_key}.j", f"{group_key}.t", f"{group_key}.s"
 
-        if await client.exists(group_key):
-            error = "Mixed Redis chords with saved group structures are not supported."
-            raise SetupError(error)
         if await client.type(journal) not in {b"none", b"zset"}:
             error = "Mixed Redis chords require result_chord_ordered=True."
             raise SetupError(error)
@@ -153,8 +154,58 @@ class RedisResultBackend:
         if not expected or ready != int(expected) + int(extra or 0):
             return None
 
+        if saved := await client.get(group_key):
+            (saved_id, _), members = kombu_loads(saved)["result"]
+            if saved_id != group_id:
+                error = "The saved chord group id does not match its Redis key."
+                raise SetupError(error)
+            task_ids = []
+            for (task_id, _), children in members:
+                if children is not None:
+                    error = "Mixed Redis chords with nested groups are not supported."
+                    raise SetupError(error)
+                task_ids.append(task_id)
+            return await self.join_group(group_id, task_ids)
+
         entries = cast("list[bytes]", await client.zrange(journal, 0, -1))
         return [ChordResult(*kombu_loads(entry)[1:]) for entry in entries]
+
+    async def join_group(self, group_id: str, task_ids: list[str]) -> list[ChordResult]:
+        """Join a saved flat GroupResult in its persisted order, like Celery."""
+        if not task_ids:
+            return []
+        client = self._connected()
+        results: dict[str, ChordResult] = {}
+        with anyio.move_on_after(self.chord_join_timeout):
+            while True:
+                pending = [task_id for task_id in task_ids if task_id not in results]
+                keys = [self.key_for(task_id) for task_id in pending]
+                for task_id, payload in zip(
+                    pending,
+                    await client.mget(keys),
+                    strict=True,
+                ):
+                    if payload is not None:
+                        meta = kombu_loads(payload)
+                        if meta["status"] in READY_STATES:
+                            results[task_id] = ChordResult(
+                                task_id,
+                                meta["status"],
+                                meta["result"],
+                            )
+                if all(task_id in results for task_id in task_ids) or any(
+                    part.status in {FAILURE, REVOKED} for part in results.values()
+                ):
+                    return [
+                        results[task_id] for task_id in task_ids if task_id in results
+                    ]
+                await anyio.sleep(self.poll_interval)
+
+        error = (
+            f"Saved chord group {group_id!r} did not complete "
+            f"within {self.chord_join_timeout} seconds."
+        )
+        raise ChordJoinError(error)
 
     async def clear_chord(self, group_id: str) -> None:
         """Delete the same journal, size and adjustment keys Celery deletes."""

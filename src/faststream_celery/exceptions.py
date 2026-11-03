@@ -13,7 +13,13 @@ __all__ = (
     "DECODE_ERRORS",
     "PUBLISH_ERRORS",
     "SETTLE_ERRORS",
+    "ChordJoinError",
 )
+
+
+class ChordJoinError(Exception):
+    """A complete chord journal could not be joined from saved task results."""
+
 
 # Turning a wire body into Python failed: a serializer we do not accept, a
 # truncated payload, or a body that is not shaped like a Celery envelope.
