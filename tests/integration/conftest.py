@@ -1,8 +1,9 @@
+import gc
 import os
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 
 import pytest
@@ -90,13 +91,17 @@ def result_backend(broker_url: str) -> str:
 
 
 @pytest.fixture()
-def celery_app(broker_url: str, result_backend: str) -> Celery:
+def celery_app(broker_url: str, result_backend: str) -> Generator[Celery]:
     """A real Celery client on the transport under test."""
-    return Celery(
+    with Celery(
         "faststream_celery_tests",
         broker=broker_url,
         backend=result_backend,
-    )
+    ) as app:
+        try:
+            yield app
+        finally:
+            gc.collect()
 
 
 @pytest.fixture()

@@ -24,6 +24,7 @@ from tests.integration.base import (
     TransportTestcase,
     wait_for,
 )
+from tests.integration.chords import RedisChordTestcase
 from tests.integration.routing import RoutingTestcase
 
 if TYPE_CHECKING:
@@ -51,6 +52,10 @@ def _entries_for(unacked: Mapping[Any, Any], queue: str) -> list[Any]:
 
 class TestRedisTransport(TransportTestcase):
     """Every transport behaviour, over the Redis virtual transport."""
+
+
+class TestRedisChords(RedisChordTestcase):
+    """Mixed chords over Redis transport and result backend."""
 
 
 class TestRedisSpecifics:

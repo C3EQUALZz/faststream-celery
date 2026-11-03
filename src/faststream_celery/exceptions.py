@@ -11,6 +11,7 @@ from kombu.exceptions import KombuError
 __all__ = (
     "CONNECTION_ERRORS",
     "DECODE_ERRORS",
+    "PUBLISH_ERRORS",
     "SETTLE_ERRORS",
 )
 
@@ -38,3 +39,6 @@ CONNECTION_ERRORS: tuple[type[Exception], ...] = (
     AMQPError,
     OSError,
 )
+
+# A continuation could not be encoded or sent to the transport.
+PUBLISH_ERRORS: tuple[type[Exception], ...] = (*CONNECTION_ERRORS, *DECODE_ERRORS)

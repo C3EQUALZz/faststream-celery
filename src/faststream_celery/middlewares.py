@@ -37,7 +37,8 @@ class CeleryResultMiddleware(
       ``celery-task-meta-<id>``.
 
     It also runs the canvas the task carries: callbacks and the next chain
-    link on success, errbacks on failure.
+    link on success, errbacks on failure. A failure completes the remaining
+    frozen chain results without executing those tasks.
     """
 
     def __init__(
@@ -50,7 +51,7 @@ class CeleryResultMiddleware(
     ) -> None:
         super().__init__(msg, context=context)
         self._config = config
-        self._canvas = CanvasDispatcher(config.producer)
+        self._canvas = CanvasDispatcher(config.producer, config.result_backend)
 
     @override
     async def consume_scope(
@@ -79,13 +80,35 @@ class CeleryResultMiddleware(
 
         except Exception as exc:
             if self.should_report_outcome(msg, failed=True):
-                await self._report(msg, build_failure(task_id, exc), reply=True)
+                failure = build_failure(task_id, exc)
+                await self._report(msg, failure, reply_to=msg.reply_to)
+                await self._canvas.on_chord_part(
+                    msg,
+                    embed.get("chord"),
+                    failure,
+                    queue=queue,
+                )
+                for step in embed.get("chain") or ():
+                    options = step.get("options") or {}
+                    if (downstream_id := options.get("task_id")) is not None:
+                        await self._report(
+                            msg,
+                            {**failure, "task_id": downstream_id},
+                            reply_to=str(options.get("reply_to") or ""),
+                        )
                 await self._canvas.on_failure(msg, embed, task_id, queue=queue)
             raise
 
         if self.should_report_outcome(msg, failed=False):
             body = ensure_response(result).body
-            await self._report(msg, build_success(task_id, body), reply=False)
+            success = build_success(task_id, body)
+            await self._report(msg, success)
+            await self._canvas.on_chord_part(
+                msg,
+                embed.get("chord"),
+                success,
+                queue=queue,
+            )
             await self._canvas.on_success(msg, embed, body, queue=queue)
         return result
 
@@ -105,7 +128,7 @@ class CeleryResultMiddleware(
         msg: "StreamMessage[Any]",
         envelope: TaskResult,
         *,
-        reply: bool,
+        reply_to: str = "",
     ) -> None:
         if msg.headers.get("ignore_result"):
             return
@@ -113,12 +136,12 @@ class CeleryResultMiddleware(
         if (backend := self._config.result_backend) is not None:
             await backend.store(envelope["task_id"], envelope)
 
-        if not reply or not msg.reply_to:
+        if not reply_to:
             return
 
         subscriber = get_subscriber(self.context)
         if subscriber is None or not subscriber.config.no_reply:
-            await self._publish_reply(msg.reply_to, envelope)
+            await self._publish_reply(reply_to, envelope)
 
     async def _publish_reply(self, reply_to: str, envelope: TaskResult) -> None:
         await self._config.producer.publish(

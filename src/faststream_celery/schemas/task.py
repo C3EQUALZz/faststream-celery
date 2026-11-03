@@ -53,6 +53,7 @@ class CeleryTask:
     parent_id: str | None = None
     group: str | None = None
     group_index: int | None = None
+    chord: TaskSignature | None = None
 
     def __post_init__(self) -> None:
         if self.countdown is not None and self.eta is not None:
@@ -106,6 +107,7 @@ def as_signature(step: "Continuation") -> TaskSignature:
             "parent_id": step.parent_id,
             "group_id": step.group,
             "group_index": step.group_index,
+            "chord": step.chord,
         }
         return signature(
             step.task,
@@ -190,7 +192,7 @@ def build_task_envelope(
             callbacks=_steps(task.link),
             errbacks=_steps(task.link_error),
             chain=_steps(task.chain),
-            chord=None,
+            chord=task.chord,
         ),
     )
 

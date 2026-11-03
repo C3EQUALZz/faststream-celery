@@ -125,6 +125,22 @@ or errback can carry its own chain; a chain step receives the remaining outer
 chain, matching Celery's worker dispatch. Root and parent ids follow the task
 that actually dispatched the continuation.
 
+Errbacks run as queued task signatures. Mutable signatures receive the failed
+task id before their own positional arguments; immutable signatures keep only
+their own arguments. Both retain their keyword arguments. The broker does not
+invoke Celery's inline errbacks with `(request, exc, traceback)`; those require
+an application wrapper using the queued task contract.
+
+When an ordinary chain step fails, every remaining signature with a frozen
+`task_id` receives a `FAILURE` result with the original exception and traceback,
+without executing the remaining tasks. Backend storage uses each signature's
+id; RPC replies use its own `reply_to`, without falling back to the failed
+task's reply queue. Signatures without a task id do not create new result ids.
+Subscriber `no_reply` still suppresses automatic RPC replies; the failed task's
+`ignore_result` suppresses both storage and replies. Delivery control and
+requeued processing do not propagate terminal failure. Failure handling inside
+composite canvases remains a separate requirement.
+
 `CeleryTask` continuations serialize all their task options, including nested
 canvas and lineage. Relative times are resolved when the continuation is
 published. Without an explicit queue, a continuation uses the active subscriber's
@@ -133,14 +149,28 @@ set explicit continuation queues for their respective executors.
 
 Non-null options outside this supported set raise `SetupError` when dispatching
 the continuation, as do composite signatures (`subtask_type`, such as group or
-chord). In particular priority, serializers other than the task protocol's JSON,
-and chord coordination are not implemented yet. This prevents execution with
+chord). Priority and serializers other than the task protocol's JSON are not
+implemented yet. This prevents execution with
 silently discarded options; it does not provide atomic canvas dispatch or undo
 an already completed handler.
 
-Still required: mixed **chord** (with group counters in the result backend,
-`chord_unlock` mechanics). Chord is the heaviest item in scope and a candidate
-for its own stage.
+Mixed chords constructed by a Celery client are supported with a Redis result
+backend, over either RabbitMQ or Redis transport. The initial contract uses
+flat task headers, ordinary task callbacks, default backend key prefixes,
+JSON-compatible results and `result_chord_ordered=True`. Each executor records
+parts in Celery's shared `.j` journal and reads `.s`/`.t` size counters. The
+executor completing the group publishes the body with results in header order.
+An identical journal member does not increase the count or redispatch from
+our coordinator. A failed dependency produces `celery.exceptions.ChordError`
+for the frozen body id and invokes its queued errbacks; the body is not executed.
+
+Saved/nested group structures and unordered journals raise `SetupError`.
+Nested headers, header-chain failure coordination, other backend settings and
+`chord_unlock` backends remain follow-ups. RPC does not coordinate chords.
+`TestCeleryBroker` replaces Redis with an in-memory result backend and cannot
+join these distributed groups; use connected tests. Callback publication,
+result storage and acknowledgement are not atomic or exactly once. See
+[ADR-0005](adr/0005-share-celery-redis-chord-state.md) for the protocol boundary.
 
 ### 9. Publishing
 

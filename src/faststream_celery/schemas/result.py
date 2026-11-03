@@ -53,7 +53,7 @@ def build_success(task_id: str, result: SendableMessage) -> TaskResult:
         result=result,
         traceback=None,
         children=[],
-        date_done=_now(),
+        date_done=datetime.now(timezone.utc).isoformat(),
     )
 
 
@@ -71,9 +71,21 @@ def build_failure(task_id: str, exc: BaseException) -> TaskResult:
             traceback.format_exception(type(exc), exc, exc.__traceback__),
         ),
         children=[],
-        date_done=_now(),
+        date_done=datetime.now(timezone.utc).isoformat(),
     )
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def build_chord_failure(task_id: str, message: str) -> TaskResult:
+    """Report a chord dependency or dispatch failure to a Celery client."""
+    return TaskResult(
+        task_id=task_id,
+        status=FAILURE,
+        result=ExceptionInfo(
+            exc_type="ChordError",
+            exc_message=[message],
+            exc_module="celery.exceptions",
+        ),
+        traceback=None,
+        children=[],
+        date_done=datetime.now(timezone.utc).isoformat(),
+    )

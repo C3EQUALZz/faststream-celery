@@ -98,6 +98,12 @@ def fail(message: str = "boom") -> None:
     raise ValueError(message)
 
 
+@app.task(name="tests.errback")
+def errback(*args: Any, **kwargs: Any) -> None:
+    """Record the exact arguments delivered to a queued errback."""
+    record({"task": "tests.errback", "args": args, "kwargs": kwargs})
+
+
 @app.task(bind=True, name="tests.progress", track_started=True)
 def progress(task: Any, *, fail: bool = False, retry_delay: float = 0.3) -> int:
     """Report progress, retry once, then return a value or fail."""

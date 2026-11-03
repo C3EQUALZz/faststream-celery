@@ -14,8 +14,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from celery import Celery
+from celery import Celery, chain
 from celery.exceptions import TimeoutError as CeleryTimeoutError
+from celery.result import AsyncResult
 from faststream.exceptions import (
     AckMessage,
     IncorrectState,
@@ -901,35 +902,45 @@ class TransportTestcase:
         ]
 
     @pytest.mark.asyncio()
-    async def test_an_errback_runs_on_a_celery_worker(
+    @pytest.mark.parametrize("immutable", (False, True))
+    async def test_an_errback_runs_on_a_celery_worker(  # ruff: ignore[too-many-arguments]
         self,
         broker: CeleryBroker,
         queue: str,
         our_queue: str,
         celery_worker: Path,
-        event: asyncio.Event,
+        celery_app: Celery,
+        *,
+        immutable: bool,
     ) -> None:
-        """An errback receives the failed task id, as Celery calls it."""
+        """Queued errbacks keep their arguments and honor immutable signatures."""
 
         @broker.subscriber(our_queue, task="tests.middle")
         async def middle() -> None:
-            event.set()
             msg = "boom"
             raise ValueError(msg)
 
         async with running(broker):
-            await broker.publish(
-                CeleryTask(
-                    "tests.middle",
-                    link_error=[signature("tests.echo", options={"queue": queue})],
-                ),
+            celery_app.send_task(
+                "tests.middle",
                 queue=our_queue,
-                correlation_id="failing-task-id",
+                task_id="failing-task-id",
+                link_error=celery_app.signature(
+                    "tests.errback",
+                    args=["own"],
+                    kwargs={"marker": "kept"},
+                    queue=queue,
+                    immutable=immutable,
+                ),
             )
-            await wait_for(event)
+            entries = await asyncio.to_thread(wait_for_log, celery_worker)
 
-        assert wait_for_log(celery_worker) == [
-            {"task": "tests.echo", "payload": "failing-task-id"},
+        assert entries == [
+            {
+                "task": "tests.errback",
+                "args": ["own"] if immutable else ["failing-task-id", "own"],
+                "kwargs": {"marker": "kept"},
+            },
         ]
 
     @pytest.mark.asyncio()
@@ -1020,3 +1031,44 @@ class TransportTestcase:
         assert info["headers"] == {"custom": "preserved"}
         assert info["exchange"] == exchange
         assert info["routing_key"] == routing_key
+
+    @pytest.mark.asyncio()
+    async def test_failed_middle_completes_downstream_chain_results(  # ruff: ignore[too-many-arguments]
+        self,
+        broker_url: str,
+        result_backend: str,
+        celery_app: Celery,
+        queue: str,
+        our_queue: str,
+        *,
+        celery_worker: Path,
+    ) -> None:
+        broker = CeleryBroker(broker_url, result_backend=result_backend)
+
+        @broker.subscriber(our_queue, task="tests.middle")
+        async def middle(args: list[int], kwargs: dict[str, Any]) -> None:
+            assert args == [3]
+            error = "middle failed"
+            raise ValueError(error)
+
+        workflow = chain(
+            celery_app.signature("tests.add", args=[1, 2], queue=queue),
+            celery_app.signature("tests.middle", queue=our_queue),
+            celery_app.signature("tests.echo", queue=queue),
+            celery_app.signature("tests.echo", queue=queue),
+        )
+
+        async with running(broker):
+            result = workflow.apply_async()
+            for downstream in (result, result.parent):
+                assert isinstance(downstream, AsyncResult)
+                # Checking parents would hide a still-pending downstream result.
+                with pytest.raises(ValueError, match="middle failed"):
+                    await asyncio.to_thread(
+                        downstream.get,
+                        timeout=CONSUME_TIMEOUT,
+                        follow_parents=False,
+                    )
+                assert downstream.state == "FAILURE"
+
+        assert read_log(celery_worker) == [{"task": "tests.add", "args": [1, 2]}]

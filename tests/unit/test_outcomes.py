@@ -42,7 +42,15 @@ def incoming() -> ConsumerMessage:
             "tests.outcome",
             link=[signature("tests.callback", options={"queue": "continuations"})],
             link_error=[signature("tests.errback", options={"queue": "continuations"})],
-            chain=[signature("tests.following", options={"queue": "continuations"})],
+            chain=[
+                signature(
+                    "tests.following",
+                    options={
+                        "queue": "continuations",
+                        "task_id": "following-id",
+                    },
+                ),
+            ],
         ),
         task_id="outcome-id",
     )

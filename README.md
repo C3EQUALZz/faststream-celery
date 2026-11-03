@@ -125,9 +125,18 @@ incoming task ID.
 
 Canvas continuations preserve scheduling, explicit routing, headers, retries,
 group metadata and nested callbacks/errbacks. A continuation without an explicit
-queue uses its subscriber's queue. Unsupported non-null options and composite
-signatures raise `SetupError` during dispatch; priority and mixed chord
-coordination remain pending. See [the canvas contract](docs/design.md#8-canvas).
+queue uses its subscriber's queue. A failed chain step completes the remaining
+frozen task results as `FAILURE` without executing those steps. Unsupported
+non-null options and composite signatures raise `SetupError` during dispatch;
+priority and composite canvas execution remain pending.
+
+Mixed chords created by Celery clients can share ordinary header tasks and
+callbacks between Celery and FastStream. They require the default ordered JSON
+Redis result backend, with either RabbitMQ or Redis transport. Header results
+retain their order; dependency failures complete the body as `ChordError` and
+run its queued errbacks. Saved/nested groups, header-chain failure coordination
+and in-memory chord testing remain unsupported.
+See [the canvas contract](docs/design.md#8-canvas).
 
 RPC replies are acknowledged before their connection closes. Returned results
 have no delivery to settle: their `ack()`, `nack()` and `reject()` methods only

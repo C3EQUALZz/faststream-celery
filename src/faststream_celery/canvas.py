@@ -8,11 +8,14 @@ tasks, the same way ``celery.app.trace`` dispatches them.
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from faststream.exceptions import SetupError
+from faststream.exceptions import IncorrectState, SetupError
 from faststream.response import PublishType
 
+from faststream_celery.backend.proto import ChordBackend
+from faststream_celery.exceptions import PUBLISH_ERRORS
 from faststream_celery.response import CeleryPublishCommand
 from faststream_celery.schemas.constants import SERIALIZER
+from faststream_celery.schemas.result import FAILURE, REVOKED, build_chord_failure
 from faststream_celery.schemas.signature import as_signatures, call_args, queue_of
 from faststream_celery.schemas.task import CeleryTask
 from faststream_celery.types import TaskEmbed, TaskSignature
@@ -21,7 +24,9 @@ if TYPE_CHECKING:
     from faststream.message import StreamMessage
 
     from faststream_celery._internal import ProducerProto, SendableMessage
+    from faststream_celery.backend.proto import ResultBackend
     from faststream_celery.message import ConsumerMessage
+    from faststream_celery.schemas.result import TaskResult
 
 
 CONTINUATION_OPTIONS = (
@@ -44,14 +49,106 @@ CONTINUATION_OPTIONS = (
     "parent_id",
     "group_id",
     "group_index",
+    "chord",
 )
 
 
 class CanvasDispatcher:
     """Publishes the continuations a finished task left behind."""
 
-    def __init__(self, producer: "ProducerProto[CeleryPublishCommand]") -> None:
+    def __init__(
+        self,
+        producer: "ProducerProto[CeleryPublishCommand]",
+        backend: "ResultBackend | None" = None,
+    ) -> None:
         self._producer = producer
+        self._backend = backend
+
+    async def on_chord_part(
+        self,
+        msg: "StreamMessage[ConsumerMessage]",
+        callback: TaskSignature | None,
+        result: "TaskResult",
+        *,
+        queue: str,
+    ) -> None:
+        """Join a flat ordered Redis chord shared with Celery workers."""
+        if callback is None:
+            return
+        validate_signature(callback)
+        options = callback.get("options") or {}
+        callback_id = options.get("task_id")
+        group_id = msg.headers.get("group")
+        if not group_id or not callback_id:
+            error = "A chord requires a group id and a frozen callback task id."
+            raise SetupError(error)
+        backend = self._backend
+        if not isinstance(backend, ChordBackend):
+            error = "Mixed chords require a Redis result backend."
+            raise SetupError(error)
+
+        parts = await backend.record_chord_part(
+            group_id,
+            msg.headers.get("group_index"),
+            result,
+        )
+        if parts is None:
+            return
+
+        failed = next((part for part in parts if part.status in {FAILURE, REVOKED}), None)
+        if failed is not None:
+            value = failed.result
+            if isinstance(value, dict):
+                args = ", ".join(map(repr, value.get("exc_message") or ()))
+                detail = f"{value.get('exc_type', 'Exception')}({args})"
+            else:
+                detail = repr(value)
+            failure = build_chord_failure(
+                callback_id,
+                f"Dependency {failed.task_id} raised {detail}",
+            )
+            await self._fail_chord(msg, callback, failure, queue=queue)
+        else:
+            values = [part.result for part in parts]
+            try:
+                await self._publish(
+                    msg,
+                    callback,
+                    args=call_args(callback, values),
+                    queue=queue,
+                )
+            except PUBLISH_ERRORS as exc:
+                failure = build_chord_failure(callback_id, f"Callback error: {exc!r}")
+                await self._fail_chord(msg, callback, failure, queue=queue)
+        await backend.clear_chord(group_id)
+
+    async def _fail_chord(
+        self,
+        msg: "StreamMessage[ConsumerMessage]",
+        callback: TaskSignature,
+        failure: "TaskResult",
+        *,
+        queue: str,
+    ) -> None:
+        """Finish a failed chord body and dispatch its queued errbacks."""
+        backend = self._backend
+        if backend is None:
+            error = "A failed chord needs its result backend to remain connected."
+            raise IncorrectState(error)
+        await backend.store(failure["task_id"], failure)
+        options = callback.get("options") or {}
+        for step in options.get("chain") or ():
+            downstream_id = (step.get("options") or {}).get("task_id")
+            if downstream_id is not None:
+                await backend.store(downstream_id, {**failure, "task_id": downstream_id})
+        for errback in as_signatures(options.get("link_error")):
+            await self._publish(
+                msg,
+                errback,
+                args=call_args(errback, failure["task_id"]),
+                queue=queue,
+                origin_id=failure["task_id"],
+            )
 
     async def on_success(
         self,
@@ -98,15 +195,20 @@ class CanvasDispatcher:
         *,
         queue: str,
     ) -> None:
-        """Fire the errbacks.
+        """Publish queued errbacks using their signature arguments.
 
-        An errback serialized by another worker takes the failed task's id,
-        not the exception — ``Backend._call_task_errbacks``.
+        Mutable signatures receive the failed task's id before their own args;
+        immutable signatures retain only their own args.
         """
         for errback in embed.get("errbacks") or ():
-            await self._publish(msg, errback, args=[task_id], queue=queue)
+            await self._publish(
+                msg,
+                errback,
+                args=call_args(errback, task_id),
+                queue=queue,
+            )
 
-    async def _publish(
+    async def _publish(  # ruff: ignore[too-many-arguments]
         self,
         msg: "StreamMessage[ConsumerMessage]",
         step: TaskSignature,
@@ -114,21 +216,12 @@ class CanvasDispatcher:
         args: "list[SendableMessage]",
         queue: str,
         chain: list[TaskSignature] | None = None,
+        origin_id: str | None = None,
     ) -> None:
         """Publish a supported task signature without discarding its options."""
-        task_id = msg.headers.get("id") or msg.correlation_id
+        task_id = origin_id or msg.headers.get("id") or msg.correlation_id
         options = step.get("options") or {}
-        unsupported = {
-            key
-            for key, value in options.items()
-            if value is not None and key not in CONTINUATION_OPTIONS
-        }
-        if options.get("serializer") not in {None, SERIALIZER}:
-            unsupported.add("serializer")
-        if unsupported or step.get("subtask_type"):
-            reason = step.get("subtask_type") or ", ".join(sorted(unsupported))
-            error = f"Unsupported Celery continuation options or type: {reason}."
-            raise SetupError(error)
+        validate_signature(step)
 
         eta = options.get("eta")
         expires = options.get("expires")
@@ -154,10 +247,15 @@ class CanvasDispatcher:
                     link=as_signatures(options.get("link")),
                     link_error=as_signatures(options.get("link_error")),
                     chain=chain if chain is not None else options.get("chain") or (),
-                    root_id=msg.headers.get("root_id") or task_id,
+                    root_id=(
+                        origin_id
+                        if origin_id is not None
+                        else msg.headers.get("root_id") or task_id
+                    ),
                     parent_id=task_id,
                     group=options.get("group_id"),
                     group_index=options.get("group_index"),
+                    chord=options.get("chord"),
                 ),
                 queue=queue_of(step, queue),
                 exchange=options.get("exchange"),
@@ -169,3 +267,19 @@ class CanvasDispatcher:
                 _publish_type=PublishType.PUBLISH,
             ),
         )
+
+
+def validate_signature(step: TaskSignature) -> None:
+    """Reject continuation options and canvas types the dispatcher cannot execute."""
+    options = step.get("options") or {}
+    unsupported = {
+        key
+        for key, value in options.items()
+        if value is not None and key not in CONTINUATION_OPTIONS
+    }
+    if options.get("serializer") not in {None, SERIALIZER}:
+        unsupported.add("serializer")
+    if unsupported or step.get("subtask_type"):
+        reason = step.get("subtask_type") or ", ".join(sorted(unsupported))
+        error = f"Unsupported Celery continuation options or type: {reason}."
+        raise SetupError(error)

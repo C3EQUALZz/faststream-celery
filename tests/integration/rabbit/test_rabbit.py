@@ -17,6 +17,7 @@ from tests.integration.base import (
     ResponseTestcase,
     TransportTestcase,
 )
+from tests.integration.chords import RedisChordTestcase
 from tests.integration.routing import RoutingTestcase
 
 pytestmark = [pytest.mark.connected(), pytest.mark.rabbit(), pytest.mark.slow()]
@@ -24,6 +25,10 @@ pytestmark = [pytest.mark.connected(), pytest.mark.rabbit(), pytest.mark.slow()]
 
 class TestRabbitTransport(TransportTestcase):
     """Every transport behaviour, over RabbitMQ."""
+
+
+class TestRabbitChords(RedisChordTestcase):
+    """Mixed chords over RabbitMQ with Redis coordination."""
 
 
 class TestAmqpRpc(RequestTestcase, OutcomeTestcase, ResponseTestcase, RoutingTestcase):

@@ -220,6 +220,7 @@ class TestDispatcher:
             link_error=[CeleryTask("on_error")],
             group="group-id",
             group_index=0,
+            chord=signature("body", options={"task_id": "body-id"}),
         )
         step = as_signature(following)
         original = deepcopy(step)
@@ -238,6 +239,7 @@ class TestDispatcher:
         assert envelope.headers["retries"] == 2
         assert envelope.headers["group"] == "group-id"
         assert envelope.headers["group_index"] == 0
+        assert envelope.body[2]["chord"] == following.chord
         assert envelope.body[0] == [7]
         assert envelope.body[2]["callbacks"] == [as_signature(callback)]
         assert envelope.body[2]["errbacks"] == [as_signature(CeleryTask("on_error"))]
@@ -317,7 +319,7 @@ class TestDispatcher:
     @pytest.mark.asyncio()
     @pytest.mark.parametrize(
         "unsupported",
-        ({"priority": 4}, {"chord": {"task": "done"}}, {"serializer": "pickle"}),
+        ({"priority": 4}, {"soft_time_limit": 1}, {"serializer": "pickle"}),
     )
     async def test_unsupported_options_are_explicit(
         self,
@@ -626,9 +628,25 @@ class TestCanvasThroughTheBroker:
         assert seen == [["done"]]
 
     @pytest.mark.asyncio()
-    async def test_an_errback_fires_after_a_failure(self, queue: str) -> None:
+    @pytest.mark.parametrize(
+        ("errback_args", "immutable", "expected"),
+        (
+            ([], False, ["task-id-1"]),
+            (["own"], False, ["task-id-1", "own"]),
+            (["own"], True, ["own"]),
+            ([], True, []),
+        ),
+    )
+    async def test_an_errback_fires_after_a_failure(
+        self,
+        queue: str,
+        errback_args: list[str],
+        expected: list[str],
+        *,
+        immutable: bool,
+    ) -> None:
         broker = CeleryBroker()
-        seen: list[Any] = []
+        seen: list[tuple[list[str], dict[str, str]]] = []
 
         @broker.subscriber(queue, task="proj.tasks.a")
         async def first() -> None:
@@ -636,21 +654,28 @@ class TestCanvasThroughTheBroker:
             raise ValueError(msg)
 
         @broker.subscriber(queue, task="proj.tasks.on_error")
-        async def on_error(args: list[str], kwargs: dict[str, Any]) -> None:
-            seen.append(args)
+        async def on_error(args: list[str], kwargs: dict[str, str]) -> None:
+            seen.append((args, kwargs))
 
         async with TestCeleryBroker(broker):
             with pytest.raises(ValueError, match="boom"):
                 await broker.publish(
                     CeleryTask(
                         "proj.tasks.a",
-                        link_error=[signature("proj.tasks.on_error")],
+                        link_error=[
+                            signature(
+                                "proj.tasks.on_error",
+                                args=errback_args,
+                                kwargs={"marker": "kept"},
+                                immutable=immutable,
+                            ),
+                        ],
                     ),
                     queue=queue,
                     correlation_id="task-id-1",
                 )
 
-        assert seen == [["task-id-1"]]
+        assert seen == [(expected, {"marker": "kept"})]
 
     @pytest.mark.asyncio()
     async def test_a_chain_written_with_celery_tasks(self, queue: str) -> None:

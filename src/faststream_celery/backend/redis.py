@@ -9,9 +9,14 @@ import json
 from typing import TYPE_CHECKING, Final, cast
 
 import anyio
-from faststream.exceptions import IncorrectState
+from faststream.exceptions import IncorrectState, SetupError
+from kombu.utils.json import (
+    dumps as kombu_dumps,
+    loads as kombu_loads,
+)
 
 from faststream_celery._internal import dump_json
+from faststream_celery.backend.proto import ChordResult
 from faststream_celery.schemas.result import READY_STATES
 
 try:
@@ -29,6 +34,7 @@ if TYPE_CHECKING:
 
 # `celery.backends.base.Backend.task_keyprefix`.
 KEY_PREFIX: Final[str] = "celery-task-meta-"
+GROUP_PREFIX: Final[str] = "celery-taskset-meta-"
 
 # `result_expires`, one day.
 DEFAULT_EXPIRES: Final[int] = 86400
@@ -106,6 +112,55 @@ class RedisResultBackend:
 
     def key_for(self, task_id: str) -> str:
         return f"{KEY_PREFIX}{task_id}"
+
+    async def record_chord_part(
+        self,
+        group_id: str,
+        group_index: int | None,
+        result: "TaskResult",
+    ) -> list[ChordResult] | None:
+        """Join Celery's default ordered JSON chord journal and size counters."""
+        client = self._connected()
+        group_key = f"{GROUP_PREFIX}{group_id}"
+        journal, difference, size = f"{group_key}.j", f"{group_key}.t", f"{group_key}.s"
+
+        if await client.exists(group_key):
+            error = "Mixed Redis chords with saved group structures are not supported."
+            raise SetupError(error)
+        if await client.type(journal) not in {b"none", b"zset"}:
+            error = "Mixed Redis chords require result_chord_ordered=True."
+            raise SetupError(error)
+
+        encoded = kombu_dumps([
+            1,
+            result["task_id"],
+            result["status"],
+            json.loads(dump_json(result["result"])),
+        ])
+        async with client.pipeline() as pipe:
+            pipe.zadd(
+                journal,
+                {encoded: group_index if group_index is not None else float("inf")},
+            )
+            pipe.zcount(journal, "-inf", "+inf")
+            pipe.get(difference)
+            pipe.get(size)
+            if self.expires:
+                pipe.expire(journal, self.expires)
+                pipe.expire(difference, self.expires)
+                pipe.expire(size, self.expires)
+            added, ready, extra, expected = (await pipe.execute())[:4]
+
+        if not added or not expected or ready != int(expected) + int(extra or 0):
+            return None
+
+        entries = cast("list[bytes]", await client.zrange(journal, 0, -1))
+        return [ChordResult(*kombu_loads(entry)[1:]) for entry in entries]
+
+    async def clear_chord(self, group_id: str) -> None:
+        """Delete the same journal, size and adjustment keys Celery deletes."""
+        key = f"{GROUP_PREFIX}{group_id}"
+        await self._connected().delete(f"{key}.j", f"{key}.t", f"{key}.s")
 
     def _connected(self) -> Redis:
         if self._client is None:
