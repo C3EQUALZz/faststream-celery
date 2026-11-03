@@ -163,8 +163,8 @@ silently discarded options; it does not provide atomic canvas dispatch or undo
 an already completed handler.
 
 Mixed chords constructed by a Celery client are supported with a Redis result
-backend, over either RabbitMQ or Redis transport. The initial contract uses
-flat task headers, ordinary task callbacks, default backend key prefixes,
+backend, over either RabbitMQ or Redis transport. The contract uses
+ordinary task callbacks, default backend key prefixes,
 JSON-compatible results and `result_chord_ordered=True`. Each executor records
 parts in Celery's shared `.j` journal and reads `.s`/`.t` size counters. The
 executor completing the group publishes the body with results in header order.
@@ -174,7 +174,10 @@ cleanup can republish a callback. A failed dependency produces
 `celery.exceptions.ChordError`
 for the frozen body id and invokes its queued errbacks; the body is not executed.
 
-Saved flat `GroupResult` headers use the persisted task ids and order. After
+Saved `GroupResult` headers use the persisted task ids, order and nested group
+structure. Only terminal task ids are read from Redis; parent links and group
+ids are not task result keys. Nested groups, including empty and singleton
+groups, retain their list boundaries in the body arguments. After
 the journal reaches the expected size, the coordinator reads terminal results
 from individual task metadata keys, matching Celery's restored-group join.
 The asynchronous join has one timeout for the entire group (three seconds by
@@ -182,14 +185,17 @@ default), rather than one timeout per task. Missing or nonterminal metadata
 is polled within that deadline; expiry produces a body `ChordError` and queued
 errbacks. Header tasks must store results when their group is saved. Transient
 Redis read failures still follow the subscriber's acknowledgement policy.
+Already-read terminal results are retained while waiting for other tasks.
+A failed or revoked leaf completes the body as `ChordError`, identifying the
+leaf task rather than returning its exception as a successful nested value.
 Cleanup removes coordination keys but retains the saved `GroupResult`.
 
-Nested group structures and existing unordered journals raise `SetupError`.
+Existing unordered journals raise `SetupError`.
 Every worker must use ordered mode. An absent journal does not reveal a peer's
 mode, so mismatched configuration cannot always be detected before a write.
-Nested groups, other backend settings and `chord_unlock` backends remain
-follow-ups. Header chains are expanded by the Celery client into ordinary
-task messages; the broker does not interpret arbitrary composite signatures.
+Other backend settings and `chord_unlock` backends remain follow-ups. Composite
+headers are dispatched by Celery into ordinary task messages; this broker
+restores saved result trees but does not dispatch arbitrary composite signatures.
 RPC does not coordinate chords.
 `TestCeleryBroker` replaces Redis with an in-memory result backend and cannot
 join these distributed groups; use connected tests. Callback publication,

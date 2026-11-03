@@ -294,23 +294,46 @@ class TestRedisChordJournal:
         client.pipeline.assert_not_called()
 
     @pytest.mark.asyncio()
-    async def test_saved_nested_groups_are_explicit(
+    @pytest.mark.parametrize("status", ("SUCCESS", "FAILURE", "REVOKED"))
+    async def test_saved_nested_groups_preserve_structure_and_leaf_failures(
         self,
         pipe: MagicMock,
         client: MagicMock,
+        status: str,
     ) -> None:
         backend = RedisResultBackend("redis://localhost")
         backend._client = client
-        pipe.execute.return_value = [1, 2, None, b"2"]
+        pipe.execute.return_value = [1, 3, None, b"3"]
         with Celery("nested-group", backend="cache+memory://") as app:
-            nested = app.GroupResult("nested", [app.AsyncResult("first")])
+            deep = app.GroupResult("deep", [app.AsyncResult("third")])
+            empty = app.GroupResult("empty", [])
             # celery-types only admits AsyncResult children; Celery also supports groups.
-            group = app.GroupResult("group-id", [nested])  # type: ignore[list-item]
+            nested = app.GroupResult("nested", [app.AsyncResult("first"), deep, empty])  # type: ignore[list-item]
+            group = app.GroupResult("group-id", [app.AsyncResult("second"), nested])  # type: ignore[list-item]
             client.get.return_value = kombu_dumps({"result": group.as_tuple()}).encode()
+        client.mget.return_value = [
+            kombu_dumps(build_success("second", 2)).encode(),
+            kombu_dumps(build_success("first", 1)).encode(),
+            kombu_dumps({**build_success("third", 3), "status": status}).encode(),
+        ]
 
-        with pytest.raises(SetupError, match="nested"):
-            await backend.record_chord_part("group-id", 0, build_success("first", 1))
-        client.mget.assert_not_awaited()
+        results = await backend.record_chord_part(
+            "group-id",
+            0,
+            build_success("first", 1),
+        )
+        if status == "SUCCESS":
+            assert results == [
+                ChordResult("second", "SUCCESS", 2),
+                ChordResult("nested", "SUCCESS", [1, [3], []]),
+            ]
+        else:
+            assert results == [ChordResult("third", status, 3)]
+        client.mget.assert_awaited_once_with([
+            backend.key_for("second"),
+            backend.key_for("first"),
+            backend.key_for("third"),
+        ])
         client.zrange.assert_not_awaited()
 
     @pytest.mark.asyncio()
@@ -333,14 +356,18 @@ class TestRedisChordJournal:
             kombu_dumps(build_success("first", 10)).encode(),
         ]
 
-        assert await backend.record_chord_part(
+        results = await backend.record_chord_part(
             "group-id",
             0,
             build_success("first", 1),
-        ) == [
-            ChordResult("second", status, 20),
-            ChordResult("first", "SUCCESS", 10),
-        ]
+        )
+        if status == "SUCCESS":
+            assert results == [
+                ChordResult("second", status, 20),
+                ChordResult("first", "SUCCESS", 10),
+            ]
+        else:
+            assert results == [ChordResult("second", status, 20)]
         client.mget.assert_awaited_once_with([
             backend.key_for("second"),
             backend.key_for("first"),

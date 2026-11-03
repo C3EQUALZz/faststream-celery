@@ -22,12 +22,14 @@ Kombu's JSON encoder preserves the journal member format. An optional
 `ChordBackend` protocol exposes recording a part and clearing the finished group;
 ordinary result backends need not provide chord coordination.
 
-The initial contract covers flat task headers and ordinary task callbacks,
-default key prefixes and `result_chord_ordered=True`. Saved flat groups are now
-joined asynchronously from task metadata in their persisted order, using the
+The contract covers ordinary task callbacks, default key prefixes and
+`result_chord_ordered=True`. Saved groups are joined asynchronously from task
+metadata in their persisted order and nested list structure, using the
 default three-second group join timeout. Their header tasks must store results.
-The saved group metadata survives coordination cleanup. Nested group structures
-and existing unordered journals are rejected explicitly. All workers
+The saved group metadata survives coordination cleanup. Group ids and parent
+links are excluded from task result reads. Failed leaves are reported to the
+body as ChordError, without being hidden inside a successful nested result.
+Existing unordered journals are rejected explicitly. All workers
 must agree on ordered mode; it cannot be inferred before a journal exists.
 Chord failures
 complete the frozen body with Celery's `ChordError` and dispatch queued errbacks.
@@ -52,6 +54,6 @@ signature's chord/group metadata, matching
 [Celery's failure handling](https://docs.celeryq.dev/en/stable/_modules/celery/backends/base.html).
 The failed incoming message need not itself contain the chord metadata.
 
-Nested groups, non-default backend serialization/prefixes and alternative
-coordination modes remain follow-ups.
+Composite continuation/callback dispatch, non-default backend
+serialization/prefixes and alternative coordination modes remain follow-ups.
 Full canvas support is not implied by this initial interoperability slice.

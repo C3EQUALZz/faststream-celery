@@ -1,4 +1,4 @@
-"""Flat chords shared by FastStream and Celery, using Celery's Redis backend."""
+"""Chords shared by FastStream and Celery, using Celery's Redis backend."""
 
 import asyncio
 from collections.abc import AsyncGenerator
@@ -9,7 +9,7 @@ from unittest.mock import DEFAULT, Mock
 import anyio
 import pytest
 import pytest_asyncio
-from celery import Celery, chain, chord
+from celery import Celery, chain, chord, group
 from celery.exceptions import ChordError
 from celery.result import AsyncResult, GroupResult, ResultBase
 from faststream.middlewares import AckPolicy
@@ -26,11 +26,11 @@ from tests.integration.base import CONSUME_TIMEOUT, COUNTDOWN
 from tests.integration.celery_tasks import read_log
 
 
-async def wait_for_part(store: Redis, group_id: str) -> None:
+async def wait_for_part(store: Redis, group_id: str, *, count: int = 1) -> None:
     """Hold our part until Celery has recorded its completion."""
     with anyio.fail_after(CONSUME_TIMEOUT):
         # The Celery subprocess exposes its completion through Redis, not an Event.
-        while await store.zcard(f"{GROUP_PREFIX}{group_id}.j") != 1:  # ruff: ignore[async-busy-wait]
+        while await store.zcard(f"{GROUP_PREFIX}{group_id}.j") != count:  # ruff: ignore[async-busy-wait]
             await asyncio.sleep(0.01)
 
 
@@ -43,6 +43,126 @@ class RedisChordTestcase:
     async def chord_store(self, redis_url: str) -> AsyncGenerator[Redis]:
         async with Redis.from_url(redis_url) as client:
             yield client
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("last", ("faststream", "celery"))
+    @pytest.mark.parametrize(
+        ("body_executor", "failed_executor"),
+        (
+            pytest.param("faststream", None, id="body-faststream"),
+            pytest.param("celery", None, id="body-celery"),
+            pytest.param("celery", "faststream", id="failure-faststream"),
+            pytest.param("celery", "celery", id="failure-celery"),
+        ),
+    )
+    async def test_nested_chord(  # ruff: ignore[too-many-arguments]
+        self,
+        broker_url: str,
+        result_backend: str,
+        celery_app: Celery,
+        queue: str,
+        our_queue: str,
+        *,
+        chord_store: Redis,
+        celery_worker: Path,
+        last: str,
+        body_executor: str,
+        failed_executor: str | None,
+    ) -> None:
+        broker = CeleryBroker(broker_url, result_backend=result_backend)
+        observed: list[list[Any]] = []
+        error_ids: list[str] = []
+        handled = asyncio.Event()
+
+        @broker.subscriber(our_queue, task="tests.nested_part")
+        async def part(message: CeleryMessage) -> str:
+            if last == "faststream":
+                await wait_for_part(chord_store, message.headers["group"], count=2)
+            if failed_executor == "faststream":
+                error = "nested boom"
+                raise ValueError(error)
+            return "faststream"
+
+        @broker.subscriber(our_queue, task="tests.nested_body")
+        async def body(args: list[list[Any]], kwargs: dict[str, Any]) -> list[Any]:
+            observed.append(args[0])
+            return args[0]
+
+        @broker.subscriber(our_queue, task="tests.nested_error")
+        async def error_handler(args: list[str], kwargs: dict[str, Any]) -> None:
+            error_ids.append(args[0])
+            handled.set()
+
+        workflow = chord(
+            [
+                chain(
+                    celery_app.signature("tests.echo", args=["seed"], queue=queue),
+                    group(
+                        celery_app.signature(
+                            "tests.nested_part",
+                            queue=our_queue,
+                            immutable=True,
+                        ),
+                        celery_app.signature(
+                            "tests.fail" if failed_executor == "celery" else "tests.echo",
+                            args=[
+                                "nested boom"
+                                if failed_executor == "celery"
+                                else "celery",
+                            ],
+                            queue=queue,
+                            immutable=True,
+                            countdown=COUNTDOWN if last == "celery" else 0,
+                        ),
+                    ),
+                ),
+                celery_app.signature("tests.echo", args=["outside"], queue=queue),
+            ],
+            celery_app.signature(
+                "tests.nested_body" if body_executor == "faststream" else "tests.echo",
+                queue=our_queue if body_executor == "faststream" else queue,
+                link_error=[celery_app.signature("tests.nested_error", queue=our_queue)],
+            ),
+        )
+        frozen = workflow.freeze()
+        header = frozen.parent
+        assert isinstance(header, GroupResult)
+        assert header.results is not None
+        assert isinstance(header.results[0], GroupResult)
+        assert not await chord_store.exists(f"{GROUP_PREFIX}{header.id}")
+
+        async with running(broker):
+            result = workflow.apply_async()
+            if failed_executor is not None:
+                with pytest.raises(ChordError, match="nested boom"):
+                    await asyncio.to_thread(
+                        result.get,
+                        timeout=CONSUME_TIMEOUT,
+                        follow_parents=False,
+                    )
+                await asyncio.wait_for(handled.wait(), timeout=CONSUME_TIMEOUT)
+                assert error_ids == [result.id]
+                assert result.state == "FAILURE"
+                assert observed == []
+            else:
+                expected = [["faststream", "celery"], "outside"]
+                assert (
+                    await asyncio.to_thread(
+                        result.get,
+                        timeout=CONSUME_TIMEOUT,
+                        follow_parents=False,
+                    )
+                    == expected
+                )
+                assert observed == ([expected] if body_executor == "faststream" else [])
+                assert error_ids == []
+            assert await chord_store.exists(f"{GROUP_PREFIX}{header.id}")
+
+        entries = read_log(celery_worker)
+        assert {"task": "tests.echo", "payload": "seed"} in entries
+        assert {"task": "tests.echo", "payload": "outside"} in entries
+        if failed_executor is not None:
+            assert len(entries) == 3
 
     @pytest.mark.asyncio()
     @pytest.mark.parametrize("last", ("faststream", "celery"))

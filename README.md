@@ -135,9 +135,11 @@ callbacks between Celery and FastStream. They require the default ordered JSON
 Redis result backend, with either RabbitMQ or Redis transport. Header results
 retain their order; dependency failures complete the body as `ChordError` and
 run its queued errbacks. A retried completion can republish the callback before
-group cleanup; callbacks should be idempotent. Saved flat `GroupResult` headers
-are joined from stored task results in their saved order; their tasks must
-store results. Nested groups and in-memory chord testing remain unsupported.
+group cleanup; callbacks should be idempotent. Saved `GroupResult` headers
+are joined from stored task results in their saved order and nested list
+structure; their tasks must store results. In-memory chord testing remains
+unsupported. Celery dispatches composite header signatures; this broker
+restores their saved result structure when its ordinary tasks complete.
 Failures within linear header chains also complete the chord body as
 `ChordError`, without executing the
 remaining chain steps or the body.
