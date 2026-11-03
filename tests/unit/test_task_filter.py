@@ -4,7 +4,7 @@ import pytest
 from faststream.message import StreamMessage
 
 from faststream_celery import CeleryBroker
-from faststream_celery.subscriber.usecase import _task_filter
+from faststream_celery.subscriber.usecase import task_filter
 
 
 def _message_with_task(task: str) -> StreamMessage[Any]:
@@ -12,8 +12,8 @@ def _message_with_task(task: str) -> StreamMessage[Any]:
 
 
 def test_task_filter_matches_by_header() -> None:
-    assert _task_filter("proj.tasks.add", _message_with_task("proj.tasks.add"))
-    assert not _task_filter("proj.tasks.add", _message_with_task("proj.tasks.other"))
+    assert task_filter("proj.tasks.add", _message_with_task("proj.tasks.add"))
+    assert not task_filter("proj.tasks.add", _message_with_task("proj.tasks.other"))
 
 
 @pytest.mark.asyncio()

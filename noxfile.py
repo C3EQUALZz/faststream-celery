@@ -31,6 +31,7 @@ UNIT_TEST_DEPS = (
     "pytest",
     "pytest-asyncio",
     "pytest-cov",
+    "celery",
     "celery-types",
     "fastapi",
     "httpx",
@@ -41,7 +42,6 @@ UNIT_TEST_DEPS = (
 
 INTEGRATION_TEST_DEPS = (
     *UNIT_TEST_DEPS,
-    "celery",
     "testcontainers",
 )
 

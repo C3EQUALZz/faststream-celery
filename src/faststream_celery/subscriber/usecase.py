@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 _NO_SCHEDULE: Final[Schedule] = Schedule(eta=None, expires=None)
 
 
-def _task_filter(task: str, msg: StreamMessage[Any]) -> bool:
+def task_filter(task: str, msg: StreamMessage[Any]) -> bool:
     return msg.headers.get("task") == task
 
 
@@ -138,13 +138,13 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
             "HandlerCallWrapper[P_HandlerParams, T_HandlerReturn]",
         ],
     ]:
-        task_filter: Filter[Any] = filter
+        message_filter: Filter[Any] = filter
         if self.config.task is not None and filter is default_filter:
-            task_filter = partial(_task_filter, self.config.task)
+            message_filter = partial(task_filter, self.config.task)
 
         if func is None:
             return super().__call__(
-                filter=task_filter,
+                filter=message_filter,
                 parser=parser,
                 decoder=decoder,
                 dependencies=tuple(dependencies),
@@ -152,7 +152,7 @@ class CelerySubscriber(TasksMixin, SubscriberUsecase[ConsumerMessage]):
 
         return super().__call__(
             func,
-            filter=task_filter,
+            filter=message_filter,
             parser=parser,
             decoder=decoder,
             dependencies=tuple(dependencies),
