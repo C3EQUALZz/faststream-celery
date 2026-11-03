@@ -1,6 +1,8 @@
 # Share Celery's Redis chord state
 
 Status: proposed for review with the initial flat-chord implementation.
+Callback deduplication consequences below are superseded by
+[ADR-0006](0006-chord-readiness-and-redelivery.md).
 
 ## Context
 
@@ -22,7 +24,9 @@ ordinary result backends need not provide chord coordination.
 
 The initial contract covers flat task headers and ordinary task callbacks,
 default key prefixes and `result_chord_ordered=True`. Saved/nested group
-structures and unordered journals are rejected explicitly. Chord failures
+structures and existing unordered journals are rejected explicitly. All workers
+must agree on ordered mode; it cannot be inferred before a journal exists.
+Chord failures
 complete the frozen body with Celery's `ChordError` and dispatch queued errbacks.
 Transport may be RabbitMQ or Redis; the result backend must be Redis.
 
@@ -32,8 +36,10 @@ Celery remains a test dependency. Publishing still uses Kombu (ADR-0001),
 through FastStream's existing API (ADR-0002). In-memory TestCeleryBroker does
 not emulate distributed Redis coordination; mixed chords require live tests.
 
-Identical journal members do not increase the count or redispatch from our
-coordinator. This is not an exactly-once guarantee: legacy Celery workers do
+Identical journal members do not increase the count. The original additional
+claim that they cannot redispatch from our coordinator is superseded by
+ADR-0006: retries of a ready group must be able to complete an interrupted join.
+This is not an exactly-once guarantee: legacy Celery workers do
 not share a callback claim, and journal updates, callback publication and
 message acknowledgement are not atomic. Conflicting duplicate results and
 delivery failures require the separate delivery-guarantees work.

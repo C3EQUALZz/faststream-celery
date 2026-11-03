@@ -134,7 +134,9 @@ Mixed chords created by Celery clients can share ordinary header tasks and
 callbacks between Celery and FastStream. They require the default ordered JSON
 Redis result backend, with either RabbitMQ or Redis transport. Header results
 retain their order; dependency failures complete the body as `ChordError` and
-run its queued errbacks. Saved/nested groups, header-chain failure coordination
+run its queued errbacks. A retried completion can republish the callback before
+group cleanup; callbacks should be idempotent. Saved/nested groups,
+header-chain failure coordination
 and in-memory chord testing remain unsupported.
 See [the canvas contract](docs/design.md#8-canvas).
 

@@ -160,17 +160,22 @@ flat task headers, ordinary task callbacks, default backend key prefixes,
 JSON-compatible results and `result_chord_ordered=True`. Each executor records
 parts in Celery's shared `.j` journal and reads `.s`/`.t` size counters. The
 executor completing the group publishes the body with results in header order.
-An identical journal member does not increase the count or redispatch from
-our coordinator. A failed dependency produces `celery.exceptions.ChordError`
+An identical journal member does not increase the count. Redelivery reads a
+ready group again, allowing an interrupted join to finish; retries before
+cleanup can republish a callback. A failed dependency produces
+`celery.exceptions.ChordError`
 for the frozen body id and invokes its queued errbacks; the body is not executed.
 
-Saved/nested group structures and unordered journals raise `SetupError`.
+Saved/nested group structures and existing unordered journals raise `SetupError`.
+Every worker must use ordered mode. An absent journal does not reveal a peer's
+mode, so mismatched configuration cannot always be detected before a write.
 Nested headers, header-chain failure coordination, other backend settings and
 `chord_unlock` backends remain follow-ups. RPC does not coordinate chords.
 `TestCeleryBroker` replaces Redis with an in-memory result backend and cannot
 join these distributed groups; use connected tests. Callback publication,
 result storage and acknowledgement are not atomic or exactly once. See
-[ADR-0005](adr/0005-share-celery-redis-chord-state.md) for the protocol boundary.
+[ADR-0005](adr/0005-share-celery-redis-chord-state.md) for the protocol boundary
+and [ADR-0006](adr/0006-chord-readiness-and-redelivery.md) for redelivery semantics.
 
 ### 9. Publishing
 

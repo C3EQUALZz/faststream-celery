@@ -6,11 +6,16 @@ expects this exact shape (``celery.backends.base.Backend._get_result_meta``).
 
 import traceback
 from datetime import datetime, timezone
-from typing import Final, Literal, TypeAlias
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple, TypeAlias
 
 from typing_extensions import TypedDict
 
 from faststream_celery._internal import SendableMessage
+
+if TYPE_CHECKING:
+    from collections.abc import Generator, Sequence
+
+    from faststream_celery.types import TaskSignature
 
 SUCCESS: Literal["SUCCESS"] = "SUCCESS"
 FAILURE: Literal["FAILURE"] = "FAILURE"
@@ -45,6 +50,14 @@ class TaskResult(TypedDict):
     date_done: str
 
 
+class ChordResult(NamedTuple):
+    """One terminal result from Celery's ordered Redis chord journal."""
+
+    task_id: str
+    status: str
+    result: SendableMessage
+
+
 def build_success(task_id: str, result: SendableMessage) -> TaskResult:
     """Envelope a handler's return value as a successful Celery result."""
     return TaskResult(
@@ -75,8 +88,24 @@ def build_failure(task_id: str, exc: BaseException) -> TaskResult:
     )
 
 
-def build_chord_failure(task_id: str, message: str) -> TaskResult:
+def build_chord_failure(task_id: str, cause: ChordResult | Exception) -> TaskResult:
     """Report a chord dependency or dispatch failure to a Celery client."""
+    if isinstance(cause, ChordResult):
+        value = cause.result
+        if isinstance(value, dict):
+            message_args = value.get("exc_message") or ()
+            args = (
+                message_args
+                if isinstance(message_args, (list, tuple))
+                else (message_args,)
+            )
+            detail = f"{value.get('exc_type', 'Exception')}({', '.join(map(repr, args))})"
+        else:
+            detail = repr(value)
+        message = f"Dependency {cause.task_id} raised {detail}"
+    else:
+        message = f"Callback error: {cause!r}"
+
     return TaskResult(
         task_id=task_id,
         status=FAILURE,
@@ -89,3 +118,14 @@ def build_chord_failure(task_id: str, message: str) -> TaskResult:
         children=[],
         date_done=datetime.now(timezone.utc).isoformat(),
     )
+
+
+def failed_chain_results(
+    chain: "Sequence[TaskSignature] | None",
+    failure: TaskResult,
+) -> "Generator[tuple[TaskSignature, TaskResult]]":
+    """Associate the original failure with each frozen downstream task id."""
+    for step in chain or ():
+        task_id = (step.get("options") or {}).get("task_id")
+        if task_id is not None:
+            yield step, {**failure, "task_id": task_id}

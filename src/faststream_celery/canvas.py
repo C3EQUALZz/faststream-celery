@@ -15,7 +15,12 @@ from faststream_celery.backend.proto import ChordBackend
 from faststream_celery.exceptions import PUBLISH_ERRORS
 from faststream_celery.response import CeleryPublishCommand
 from faststream_celery.schemas.constants import SERIALIZER
-from faststream_celery.schemas.result import FAILURE, REVOKED, build_chord_failure
+from faststream_celery.schemas.result import (
+    FAILURE,
+    REVOKED,
+    build_chord_failure,
+    failed_chain_results,
+)
 from faststream_celery.schemas.signature import as_signatures, call_args, queue_of
 from faststream_celery.schemas.task import CeleryTask
 from faststream_celery.types import TaskEmbed, TaskSignature
@@ -97,16 +102,7 @@ class CanvasDispatcher:
 
         failed = next((part for part in parts if part.status in {FAILURE, REVOKED}), None)
         if failed is not None:
-            value = failed.result
-            if isinstance(value, dict):
-                args = ", ".join(map(repr, value.get("exc_message") or ()))
-                detail = f"{value.get('exc_type', 'Exception')}({args})"
-            else:
-                detail = repr(value)
-            failure = build_chord_failure(
-                callback_id,
-                f"Dependency {failed.task_id} raised {detail}",
-            )
+            failure = build_chord_failure(callback_id, failed)
             await self._fail_chord(msg, callback, failure, queue=queue)
         else:
             values = [part.result for part in parts]
@@ -118,7 +114,7 @@ class CanvasDispatcher:
                     queue=queue,
                 )
             except PUBLISH_ERRORS as exc:
-                failure = build_chord_failure(callback_id, f"Callback error: {exc!r}")
+                failure = build_chord_failure(callback_id, exc)
                 await self._fail_chord(msg, callback, failure, queue=queue)
         await backend.clear_chord(group_id)
 
@@ -137,10 +133,8 @@ class CanvasDispatcher:
             raise IncorrectState(error)
         await backend.store(failure["task_id"], failure)
         options = callback.get("options") or {}
-        for step in options.get("chain") or ():
-            downstream_id = (step.get("options") or {}).get("task_id")
-            if downstream_id is not None:
-                await backend.store(downstream_id, {**failure, "task_id": downstream_id})
+        for _, downstream in failed_chain_results(options.get("chain"), failure):
+            await backend.store(downstream["task_id"], downstream)
         for errback in as_signatures(options.get("link_error")):
             await self._publish(
                 msg,

@@ -4,13 +4,16 @@ import asyncio
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
+from unittest.mock import DEFAULT, Mock
 
 import anyio
 import pytest
 import pytest_asyncio
 from celery import Celery, chord
 from celery.exceptions import ChordError
+from faststream.middlewares import AckPolicy
 from redis.asyncio import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from faststream_celery import CeleryBroker
 from faststream_celery.annotations import CeleryMessage
@@ -177,3 +180,68 @@ class RedisChordTestcase:
             assert result.state == "FAILURE"
 
         assert len(read_log(celery_worker)) == 1
+
+    @pytest.mark.asyncio()
+    async def test_mixed_chord_recovers_after_interrupted_join(  # ruff: ignore[too-many-arguments]
+        self,
+        broker_url: str,
+        result_backend: str,
+        celery_app: Celery,
+        queue: str,
+        our_queue: str,
+        *,
+        chord_store: Redis,
+        celery_worker: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        broker = CeleryBroker(broker_url, result_backend=result_backend)
+        attempts = 0
+        bodies: list[list[str]] = []
+
+        @broker.subscriber(
+            our_queue,
+            task="tests.chord_part",
+            ack_policy=AckPolicy.NACK_ON_ERROR,
+        )
+        async def part(message: CeleryMessage) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                await wait_for_part(chord_store, message.headers["group"])
+            return "faststream"
+
+        @broker.subscriber(our_queue, task="tests.chord_body")
+        async def body(args: list[list[str]], kwargs: dict[str, Any]) -> list[str]:
+            bodies.append(args[0])
+            return args[0]
+
+        workflow = chord(
+            [
+                celery_app.signature("tests.chord_part", queue=our_queue),
+                celery_app.signature("tests.echo", args=["celery"], queue=queue),
+            ],
+            celery_app.signature("tests.chord_body", queue=our_queue),
+        )
+
+        async with running(broker):
+            backend = broker.config.broker_config.result_backend
+            assert isinstance(backend, RedisResultBackend)
+            client = backend._client
+            assert client is not None
+            interrupted_read = Mock(
+                wraps=client.zrange,
+                side_effect=[RedisConnectionError("interrupted join"), DEFAULT],
+            )
+            monkeypatch.setattr(client, "zrange", interrupted_read)
+
+            result = workflow.apply_async()
+            assert await asyncio.to_thread(
+                result.get,
+                timeout=CONSUME_TIMEOUT,
+                follow_parents=False,
+            ) == ["faststream", "celery"]
+            assert interrupted_read.call_count == 2
+
+        assert attempts == 2
+        assert bodies == [["faststream", "celery"]]
+        assert read_log(celery_worker) == [{"task": "tests.echo", "payload": "celery"}]

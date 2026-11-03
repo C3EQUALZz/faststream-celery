@@ -14,7 +14,12 @@ from faststream_celery.canvas import CanvasDispatcher
 from faststream_celery.message import ConsumerMessage
 from faststream_celery.parser import read_embed
 from faststream_celery.response import CeleryPublishCommand
-from faststream_celery.schemas.result import TaskResult, build_failure, build_success
+from faststream_celery.schemas.result import (
+    TaskResult,
+    build_failure,
+    build_success,
+    failed_chain_results,
+)
 
 if TYPE_CHECKING:
     from faststream.message import StreamMessage
@@ -88,14 +93,13 @@ class CeleryResultMiddleware(
                     failure,
                     queue=queue,
                 )
-                for step in embed.get("chain") or ():
+                for step, downstream in failed_chain_results(embed.get("chain"), failure):
                     options = step.get("options") or {}
-                    if (downstream_id := options.get("task_id")) is not None:
-                        await self._report(
-                            msg,
-                            {**failure, "task_id": downstream_id},
-                            reply_to=str(options.get("reply_to") or ""),
-                        )
+                    await self._report(
+                        msg,
+                        downstream,
+                        reply_to=str(options.get("reply_to") or ""),
+                    )
                 await self._canvas.on_failure(msg, embed, task_id, queue=queue)
             raise
 

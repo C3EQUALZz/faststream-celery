@@ -16,8 +16,7 @@ from kombu.utils.json import (
 )
 
 from faststream_celery._internal import dump_json
-from faststream_celery.backend.proto import ChordResult
-from faststream_celery.schemas.result import READY_STATES
+from faststream_celery.schemas.result import READY_STATES, ChordResult
 
 try:
     from redis.asyncio import Redis
@@ -149,9 +148,9 @@ class RedisResultBackend:
                 pipe.expire(journal, self.expires)
                 pipe.expire(difference, self.expires)
                 pipe.expire(size, self.expires)
-            added, ready, extra, expected = (await pipe.execute())[:4]
+            _, ready, extra, expected = (await pipe.execute())[:4]
 
-        if not added or not expected or ready != int(expected) + int(extra or 0):
+        if not expected or ready != int(expected) + int(extra or 0):
             return None
 
         entries = cast("list[bytes]", await client.zrange(journal, 0, -1))

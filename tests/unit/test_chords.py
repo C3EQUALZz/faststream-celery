@@ -11,11 +11,10 @@ from kombu.utils.json import (
 )
 
 from faststream_celery import CeleryTask, signature
-from faststream_celery.backend.proto import ChordResult
 from faststream_celery.backend.redis import GROUP_PREFIX, RedisResultBackend
 from faststream_celery.canvas import CanvasDispatcher
 from faststream_celery.message import CeleryMessage
-from faststream_celery.schemas.result import build_failure, build_success
+from faststream_celery.schemas.result import ChordResult, build_failure, build_success
 from faststream_celery.schemas.task import as_signature, build_task_envelope
 from tests.helpers import task_message
 
@@ -188,7 +187,7 @@ class TestRedisChordJournal:
         ("reply", "ready"),
         (
             ([1, 1, None, b"2"], False),
-            ([0, 2, None, b"2"], False),
+            ([0, 2, None, b"2"], True),
             ([1, 2, None, None], False),
             ([1, 2, b"1", b"2"], False),
             ([1, 2, None, b"2"], True),
@@ -227,6 +226,26 @@ class TestRedisChordJournal:
             assert results is None
             client.zrange.assert_not_awaited()
         assert pipe.expire.call_count == 3
+
+    @pytest.mark.asyncio()
+    async def test_retry_reads_a_ready_group_after_an_interrupted_join(
+        self,
+        pipe: MagicMock,
+        client: MagicMock,
+    ) -> None:
+        backend = RedisResultBackend("redis://localhost")
+        backend._client = client
+        pipe.execute.side_effect = [[1, 2, None, b"2"], [0, 2, None, b"2"]]
+        entries = client.zrange.return_value
+        client.zrange.side_effect = [OSError("read interrupted"), entries]
+        result = build_success("first", 1)
+
+        with pytest.raises(OSError, match="read interrupted"):
+            await backend.record_chord_part("group-id", 0, result)
+        assert await backend.record_chord_part("group-id", 0, result) == [
+            ChordResult("first", "SUCCESS", 1),
+            ChordResult("second", "SUCCESS", 2),
+        ]
 
     @pytest.mark.asyncio()
     @pytest.mark.parametrize("nested", (False, True))
