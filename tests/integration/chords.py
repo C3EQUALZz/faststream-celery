@@ -9,8 +9,9 @@ from unittest.mock import DEFAULT, Mock
 import anyio
 import pytest
 import pytest_asyncio
-from celery import Celery, chord
+from celery import Celery, chain, chord
 from celery.exceptions import ChordError
+from celery.result import AsyncResult, GroupResult, ResultBase
 from faststream.middlewares import AckPolicy
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -18,6 +19,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from faststream_celery import CeleryBroker
 from faststream_celery.annotations import CeleryMessage
 from faststream_celery.backend.redis import GROUP_PREFIX, RedisResultBackend
+from faststream_celery.parser import read_embed
 from faststream_celery.schemas.result import build_success
 from tests.helpers import running
 from tests.integration.base import CONSUME_TIMEOUT, COUNTDOWN
@@ -244,4 +246,80 @@ class RedisChordTestcase:
 
         assert attempts == 2
         assert bodies == [["faststream", "celery"]]
+        assert read_log(celery_worker) == [{"task": "tests.echo", "payload": "celery"}]
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("last", ("faststream", "celery"))
+    async def test_failed_header_chain_completes_chord(  # ruff: ignore[too-many-arguments]
+        self,
+        broker_url: str,
+        result_backend: str,
+        celery_app: Celery,
+        queue: str,
+        our_queue: str,
+        *,
+        chord_store: Redis,
+        celery_worker: Path,
+        last: str,
+    ) -> None:
+        broker = CeleryBroker(broker_url, result_backend=result_backend)
+        handled = asyncio.Event()
+        error_ids: list[str] = []
+
+        @broker.subscriber(our_queue, task="tests.header_fail")
+        async def fail(message: CeleryMessage) -> None:
+            steps = read_embed(message.raw_message.message)["chain"]
+            assert steps is not None
+            tail_options = steps[0]["options"]
+            assert tail_options["group_index"] == 1
+            if last == "faststream":
+                await wait_for_part(chord_store, tail_options["group_id"])
+            error = "header chain failed"
+            raise ValueError(error)
+
+        @broker.subscriber(our_queue, task="tests.chord_error")
+        async def error_handler(args: list[str], kwargs: dict[str, Any]) -> None:
+            error_ids.append(args[0])
+            handled.set()
+
+        workflow = chord(
+            [
+                celery_app.signature(
+                    "tests.echo",
+                    args=["celery"],
+                    queue=queue,
+                    countdown=COUNTDOWN if last == "celery" else 0,
+                ),
+                chain(
+                    celery_app.signature("tests.header_fail", queue=our_queue),
+                    celery_app.signature("tests.echo", queue=queue),
+                    celery_app.signature("tests.echo", queue=queue),
+                ),
+            ],
+            celery_app.signature(
+                "tests.echo",
+                queue=queue,
+                link_error=[celery_app.signature("tests.chord_error", queue=our_queue)],
+            ),
+        )
+
+        async with running(broker):
+            result = workflow.apply_async()
+            assert isinstance(result.parent, GroupResult)
+            assert result.parent.results is not None
+            tail = result.parent.results[1]
+            with pytest.raises(ChordError, match=f"Dependency {tail.id} raised"):
+                await asyncio.to_thread(
+                    result.get,
+                    timeout=CONSUME_TIMEOUT,
+                    follow_parents=False,
+                )
+            await asyncio.wait_for(handled.wait(), timeout=CONSUME_TIMEOUT)
+            assert result.state == "FAILURE"
+            assert error_ids == [result.id]
+            ancestor: ResultBase | None = tail
+            while isinstance(ancestor, AsyncResult):
+                assert ancestor.state == "FAILURE"
+                ancestor = ancestor.parent
+
         assert read_log(celery_worker) == [{"task": "tests.echo", "payload": "celery"}]

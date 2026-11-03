@@ -25,10 +25,19 @@ def message() -> CeleryMessage:
     return CeleryMessage(
         raw_message=raw,
         body=b"",
-        headers={"id": "part-id", "group": "group-id", "group_index": 0},
+        headers={"id": "part-id", "group": "incoming-group", "group_index": 7},
         correlation_id="part-id",
         message_id="part-id",
     )
+
+
+@pytest.fixture()
+def chord_options() -> dict[str, Any]:
+    return {
+        "group_id": "group-id",
+        "group_index": 0,
+        "chord": signature("body", options={"task_id": "body-id"}),
+    }
 
 
 class TestChordDispatch:
@@ -37,6 +46,7 @@ class TestChordDispatch:
     async def test_callback_receives_ordered_values(
         self,
         message: CeleryMessage,
+        chord_options: dict[str, Any],
         *,
         immutable: bool,
     ) -> None:
@@ -57,8 +67,9 @@ class TestChordDispatch:
             immutable=immutable,
         )
         result = build_success("part-id", 1)
+        chord_options["chord"] = callback
 
-        await dispatcher.on_chord_part(message, callback, result, queue="parts")
+        await dispatcher.on_chord_part(message, chord_options, result, queue="parts")
 
         backend.record_chord_part.assert_awaited_once_with("group-id", 0, result)
         command = producer.publish.call_args.args[0]
@@ -71,6 +82,7 @@ class TestChordDispatch:
     async def test_incomplete_group_does_not_dispatch(
         self,
         message: CeleryMessage,
+        chord_options: dict[str, Any],
     ) -> None:
         producer = AsyncMock()
         backend = AsyncMock(spec=RedisResultBackend)
@@ -78,7 +90,7 @@ class TestChordDispatch:
 
         await CanvasDispatcher(producer, backend).on_chord_part(
             message,
-            signature("body", options={"task_id": "body-id"}),
+            chord_options,
             build_success("part-id", 1),
             queue="parts",
         )
@@ -91,6 +103,7 @@ class TestChordDispatch:
     async def test_failure_finishes_the_body_and_runs_its_errback(
         self,
         message: CeleryMessage,
+        chord_options: dict[str, Any],
         *,
         publish_error: bool,
     ) -> None:
@@ -117,10 +130,11 @@ class TestChordDispatch:
                 ],
             },
         )
+        chord_options["chord"] = callback
 
         await CanvasDispatcher(producer, backend).on_chord_part(
             message,
-            callback,
+            chord_options,
             failure,
             queue="parts",
         )
@@ -142,11 +156,12 @@ class TestChordDispatch:
     async def test_backend_without_chord_coordination_is_explicit(
         self,
         message: CeleryMessage,
+        chord_options: dict[str, Any],
     ) -> None:
         with pytest.raises(SetupError, match="Redis result backend"):
             await CanvasDispatcher(AsyncMock()).on_chord_part(
                 message,
-                signature("body", options={"task_id": "body-id"}),
+                chord_options,
                 build_success("part-id", 1),
                 queue="parts",
             )

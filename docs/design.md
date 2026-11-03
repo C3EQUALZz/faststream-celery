@@ -139,7 +139,15 @@ task's reply queue. Signatures without a task id do not create new result ids.
 Subscriber `no_reply` still suppresses automatic RPC replies; the failed task's
 `ignore_result` suppresses both storage and replies. Delivery control and
 requeued processing do not propagate terminal failure. Failure handling inside
-composite canvases remains a separate requirement.
+other composite canvases remains a separate requirement.
+
+If a linear chain inside a chord header fails, each skipped frozen signature
+that carries chord metadata is reported to its group under that signature's
+`task_id`, `group_id` and `group_index`. This completes the chord body as
+`ChordError` and runs its queued errbacks once all parts have reported, without
+executing the skipped tasks or the body. Part-result storage and automatic RPC
+replies keep their existing `ignore_result`/`no_reply` rules; chord notification
+follows the terminal outcome independently of those storage/reply settings.
 
 `CeleryTask` continuations serialize all their task options, including nested
 canvas and lineage. Relative times are resolved when the continuation is
@@ -169,8 +177,10 @@ for the frozen body id and invokes its queued errbacks; the body is not executed
 Saved/nested group structures and existing unordered journals raise `SetupError`.
 Every worker must use ordered mode. An absent journal does not reveal a peer's
 mode, so mismatched configuration cannot always be detected before a write.
-Nested headers, header-chain failure coordination, other backend settings and
-`chord_unlock` backends remain follow-ups. RPC does not coordinate chords.
+Nested groups, other backend settings and `chord_unlock` backends remain
+follow-ups. Header chains are expanded by the Celery client into ordinary
+task messages; the broker does not interpret arbitrary composite signatures.
+RPC does not coordinate chords.
 `TestCeleryBroker` replaces Redis with an in-memory result backend and cannot
 join these distributed groups; use connected tests. Callback publication,
 result storage and acknowledgement are not atomic or exactly once. See

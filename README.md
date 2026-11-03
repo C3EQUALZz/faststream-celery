@@ -135,9 +135,10 @@ callbacks between Celery and FastStream. They require the default ordered JSON
 Redis result backend, with either RabbitMQ or Redis transport. Header results
 retain their order; dependency failures complete the body as `ChordError` and
 run its queued errbacks. A retried completion can republish the callback before
-group cleanup; callbacks should be idempotent. Saved/nested groups,
-header-chain failure coordination
-and in-memory chord testing remain unsupported.
+group cleanup; callbacks should be idempotent. Saved/nested groups and
+in-memory chord testing remain unsupported. Failures within linear header
+chains also complete the chord body as `ChordError`, without executing the
+remaining chain steps or the body.
 See [the canvas contract](docs/design.md#8-canvas).
 
 RPC replies are acknowledged before their connection closes. Returned results

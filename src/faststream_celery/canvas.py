@@ -26,6 +26,9 @@ from faststream_celery.schemas.task import CeleryTask
 from faststream_celery.types import TaskEmbed, TaskSignature
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from typing import Any
+
     from faststream.message import StreamMessage
 
     from faststream_celery._internal import ProducerProto, SendableMessage
@@ -72,18 +75,19 @@ class CanvasDispatcher:
     async def on_chord_part(
         self,
         msg: "StreamMessage[ConsumerMessage]",
-        callback: TaskSignature | None,
+        part_options: "Mapping[str, Any]",
         result: "TaskResult",
         *,
         queue: str,
     ) -> None:
-        """Join a flat ordered Redis chord shared with Celery workers."""
+        """Report a terminal part using its own Celery signature metadata."""
+        callback = part_options.get("chord")
         if callback is None:
             return
         validate_signature(callback)
         options = callback.get("options") or {}
         callback_id = options.get("task_id")
-        group_id = msg.headers.get("group")
+        group_id = part_options.get("group_id")
         if not group_id or not callback_id:
             error = "A chord requires a group id and a frozen callback task id."
             raise SetupError(error)
@@ -94,7 +98,7 @@ class CanvasDispatcher:
 
         parts = await backend.record_chord_part(
             group_id,
-            msg.headers.get("group_index"),
+            part_options.get("group_index"),
             result,
         )
         if parts is None:

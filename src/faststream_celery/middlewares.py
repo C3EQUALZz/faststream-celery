@@ -72,6 +72,11 @@ class CeleryResultMiddleware(
         task_id: str = msg.headers.get("id") or msg.correlation_id
 
         embed = read_embed(msg.raw_message.message)
+        chord_options = {
+            "chord": embed.get("chord"),
+            "group_id": msg.headers.get("group"),
+            "group_index": msg.headers.get("group_index"),
+        }
         subscriber = get_subscriber(self.context)
         queue = subscriber.queue if subscriber is not None else ""
 
@@ -89,7 +94,7 @@ class CeleryResultMiddleware(
                 await self._report(msg, failure, reply_to=msg.reply_to)
                 await self._canvas.on_chord_part(
                     msg,
-                    embed.get("chord"),
+                    chord_options,
                     failure,
                     queue=queue,
                 )
@@ -100,6 +105,12 @@ class CeleryResultMiddleware(
                         downstream,
                         reply_to=str(options.get("reply_to") or ""),
                     )
+                    await self._canvas.on_chord_part(
+                        msg,
+                        options,
+                        downstream,
+                        queue=queue,
+                    )
                 await self._canvas.on_failure(msg, embed, task_id, queue=queue)
             raise
 
@@ -109,7 +120,7 @@ class CeleryResultMiddleware(
             await self._report(msg, success)
             await self._canvas.on_chord_part(
                 msg,
-                embed.get("chord"),
+                chord_options,
                 success,
                 queue=queue,
             )

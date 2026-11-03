@@ -1,6 +1,7 @@
 """A failed chain step completes frozen downstream results without executing them."""
 
 import pytest
+from faststream.middlewares import AckPolicy
 
 from faststream_celery import CeleryBroker, CeleryTask, TestCeleryBroker, signature
 from faststream_celery.annotations import CeleryMessage
@@ -88,3 +89,50 @@ async def test_failure_completes_frozen_chain_results(
             result = chain_replies.mock.call_args.args[0]
             assert result["task_id"] == "last-id"
             assert result["status"] == "FAILURE"
+
+
+@pytest.mark.asyncio()
+@pytest.mark.parametrize("disposition", ("exception", "nack", "reject"))
+async def test_unfinished_header_chain_does_not_notify_chord(
+    queue: str,
+    disposition: str,
+) -> None:
+    broker = CeleryBroker(
+        result_backend="redis://localhost",
+        ack_policy=AckPolicy.NACK_ON_ERROR,
+    )
+
+    @broker.subscriber(queue, task="tests.middle")
+    async def middle(message: CeleryMessage) -> None:
+        if disposition == "exception":
+            error = "retry processing"
+            raise ValueError(error)
+        if disposition == "nack":
+            await message.nack()
+        else:
+            await message.reject()
+
+    task = CeleryTask(
+        "tests.middle",
+        chain=[
+            signature(
+                "tests.tail",
+                options={
+                    "task_id": "tail-id",
+                    "group_id": "group-id",
+                    "group_index": 1,
+                    "chord": signature("tests.body", options={"task_id": "body-id"}),
+                },
+            ),
+        ],
+    )
+    async with TestCeleryBroker(broker):
+        if disposition == "exception":
+            with pytest.raises(ValueError, match="retry processing"):
+                await broker.publish(task, queue=queue)
+        else:
+            await broker.publish(task, queue=queue)
+
+        backend = broker.config.broker_config.result_backend
+        assert isinstance(backend, InMemoryResultBackend)
+        assert backend.results == {}

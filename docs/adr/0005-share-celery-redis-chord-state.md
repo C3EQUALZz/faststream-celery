@@ -44,6 +44,11 @@ not share a callback claim, and journal updates, callback publication and
 message acknowledgement are not atomic. Conflicting duplicate results and
 delivery failures require the separate delivery-guarantees work.
 
-Nested headers, header-chain failure coordination, non-default backend
-serialization/prefixes and alternative coordination modes remain follow-ups.
+Failure propagation through linear header chains now uses the skipped terminal
+signature's chord/group metadata, matching
+[Celery's failure handling](https://docs.celeryq.dev/en/stable/_modules/celery/backends/base.html).
+The failed incoming message need not itself contain the chord metadata.
+
+Nested groups, non-default backend serialization/prefixes and alternative
+coordination modes remain follow-ups.
 Full canvas support is not implied by this initial interoperability slice.
