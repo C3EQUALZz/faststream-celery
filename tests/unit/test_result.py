@@ -1,15 +1,14 @@
 import json
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import patch
 
 import pytest
-from faststream.response import PublishType
+from faststream.response import PublishCommand, PublishType
 
 from faststream_celery import CeleryBroker, CeleryTask, TestCeleryBroker
-from faststream_celery.response import CeleryPublishCommand
+from faststream_celery.annotations import CeleryMessage
+from faststream_celery.publisher.fake import CeleryFakePublisher
+from faststream_celery.publisher.producer import CeleryFastProducer
 from faststream_celery.schemas.result import (
     FAILURE,
     SUCCESS,
@@ -59,41 +58,26 @@ def test_failure_envelope_is_json_serializable() -> None:
     assert json.loads(json.dumps(envelope))["result"]["exc_message"] == ["boom", 42]
 
 
-@asynccontextmanager
-async def _replies(broker: CeleryBroker) -> AsyncGenerator[list[CeleryPublishCommand]]:
-    """Collect every reply the broker publishes while the block runs."""
-    recorded: list[CeleryPublishCommand] = []
+@pytest.fixture()
+def reply_observer(queue: str) -> tuple[CeleryBroker, list[CeleryMessage]]:
+    observer = CeleryBroker()
+    replies: list[CeleryMessage] = []
 
-    async with TestCeleryBroker(broker):
-        producer = broker.config.producer
-        original = producer.publish
+    @observer.subscriber(f"{queue}.replies")
+    async def capture(message: CeleryMessage) -> None:
+        replies.append(message)
 
-        async def recording_publish(cmd: CeleryPublishCommand) -> None:
-            if cmd.publish_type is PublishType.REPLY:
-                recorded.append(cmd)
-            await original(cmd)
-
-        with patch.object(producer, "publish", new=recording_publish):
-            yield recorded
+    return observer, replies
 
 
-@pytest.mark.asyncio()
-async def test_successful_handler_replies_with_a_result_envelope(queue: str) -> None:
-    broker = CeleryBroker()
+def test_success_reply_command_uses_the_client_owned_queue() -> None:
+    publisher = CeleryFakePublisher(
+        CeleryFastProducer(parser=None, decoder=None),
+        queue="reply-queue",
+        task_id="task-id-1",
+    )
+    reply = publisher.patch_command(PublishCommand(3, _publish_type=PublishType.REPLY))
 
-    @broker.subscriber(queue, task="proj.tasks.add")
-    async def handler() -> int:
-        return 3
-
-    async with _replies(broker) as replies:
-        await broker.publish(
-            CeleryTask("proj.tasks.add"),
-            queue=queue,
-            correlation_id="task-id-1",
-            reply_to="reply-queue",
-        )
-
-    (reply,) = replies
     assert reply.queue == "reply-queue"
     assert reply.exchange == ""
     assert reply.declare is False
@@ -101,19 +85,54 @@ async def test_successful_handler_replies_with_a_result_envelope(queue: str) -> 
     assert reply.body["task_id"] == "task-id-1"
     assert reply.body["status"] == SUCCESS
     assert reply.body["result"] == 3
-    assert reply.body["traceback"] is None
 
 
 @pytest.mark.asyncio()
-async def test_failing_handler_replies_with_a_failure_envelope(queue: str) -> None:
+async def test_successful_handler_replies_with_a_result_envelope(
+    queue: str,
+    reply_observer: tuple[CeleryBroker, list[CeleryMessage]],
+) -> None:
     broker = CeleryBroker()
+    observer, replies = reply_observer
+
+    @broker.subscriber(queue, task="proj.tasks.add")
+    async def handler() -> int:
+        return 3
+
+    async with TestCeleryBroker(broker, observer):
+        await broker.publish(
+            CeleryTask("proj.tasks.add"),
+            queue=queue,
+            correlation_id="task-id-1",
+            reply_to=f"{queue}.replies",
+        )
+
+    (reply,) = replies
+    assert reply.raw_message.message.delivery_info["routing_key"] == f"{queue}.replies"
+    assert reply.raw_message.message.delivery_info["exchange"] == ""
+    assert reply.correlation_id == "task-id-1"
+    envelope = await reply.decode()
+    assert isinstance(envelope, dict)
+    assert envelope["task_id"] == "task-id-1"
+    assert envelope["status"] == SUCCESS
+    assert envelope["result"] == 3
+    assert envelope["traceback"] is None
+
+
+@pytest.mark.asyncio()
+async def test_failing_handler_replies_with_a_failure_envelope(
+    queue: str,
+    reply_observer: tuple[CeleryBroker, list[CeleryMessage]],
+) -> None:
+    broker = CeleryBroker()
+    observer, replies = reply_observer
 
     @broker.subscriber(queue, task="proj.tasks.add")
     async def handler() -> None:
         msg = "boom"
         raise ValueError(msg)
 
-    async with _replies(broker) as replies:
+    async with TestCeleryBroker(broker, observer):
         # A test broker re-raises handler errors so the test can see them;
         # the FAILURE reply is published on the way out.
         with pytest.raises(ValueError, match="boom"):
@@ -121,32 +140,38 @@ async def test_failing_handler_replies_with_a_failure_envelope(queue: str) -> No
                 CeleryTask("proj.tasks.add"),
                 queue=queue,
                 correlation_id="task-id-1",
-                reply_to="reply-queue",
+                reply_to=f"{queue}.replies",
             )
 
     (reply,) = replies
-    assert reply.queue == "reply-queue"
-    assert reply.exchange == ""
+    assert reply.raw_message.message.delivery_info["routing_key"] == f"{queue}.replies"
+    assert reply.raw_message.message.delivery_info["exchange"] == ""
     assert reply.correlation_id == "task-id-1"
-    assert reply.body["status"] == FAILURE
-    assert reply.body["result"]["exc_type"] == "ValueError"
-    assert reply.body["result"]["exc_message"] == ["boom"]
+    envelope = await reply.decode()
+    assert isinstance(envelope, dict)
+    assert envelope["status"] == FAILURE
+    assert envelope["result"]["exc_type"] == "ValueError"
+    assert envelope["result"]["exc_message"] == ["boom"]
 
 
 @pytest.mark.asyncio()
-async def test_ignore_result_suppresses_the_reply(queue: str) -> None:
+async def test_ignore_result_suppresses_the_reply(
+    queue: str,
+    reply_observer: tuple[CeleryBroker, list[CeleryMessage]],
+) -> None:
     broker = CeleryBroker()
+    observer, replies = reply_observer
 
     @broker.subscriber(queue, task="proj.tasks.add")
     async def handler() -> int:
         return 3
 
-    async with _replies(broker) as replies:
+    async with TestCeleryBroker(broker, observer):
         await broker.publish(
             CeleryTask("proj.tasks.add"),
             queue=queue,
             correlation_id="task-id-1",
-            reply_to="reply-queue",
+            reply_to=f"{queue}.replies",
             headers={"ignore_result": True},
         )
 
@@ -154,21 +179,25 @@ async def test_ignore_result_suppresses_the_reply(queue: str) -> None:
 
 
 @pytest.mark.asyncio()
-async def test_ignore_result_suppresses_the_failure_reply(queue: str) -> None:
+async def test_ignore_result_suppresses_the_failure_reply(
+    queue: str,
+    reply_observer: tuple[CeleryBroker, list[CeleryMessage]],
+) -> None:
     broker = CeleryBroker()
+    observer, replies = reply_observer
 
     @broker.subscriber(queue, task="proj.tasks.add")
     async def handler() -> None:
         msg = "boom"
         raise ValueError(msg)
 
-    async with _replies(broker) as replies:
+    async with TestCeleryBroker(broker, observer):
         with pytest.raises(ValueError, match="boom"):
             await broker.publish(
                 CeleryTask("proj.tasks.add"),
                 queue=queue,
                 correlation_id="task-id-1",
-                reply_to="reply-queue",
+                reply_to=f"{queue}.replies",
                 headers={"ignore_result": True},
             )
 
@@ -176,14 +205,18 @@ async def test_ignore_result_suppresses_the_failure_reply(queue: str) -> None:
 
 
 @pytest.mark.asyncio()
-async def test_no_reply_to_means_no_reply(queue: str) -> None:
+async def test_no_reply_to_means_no_reply(
+    queue: str,
+    reply_observer: tuple[CeleryBroker, list[CeleryMessage]],
+) -> None:
     broker = CeleryBroker()
+    observer, replies = reply_observer
 
     @broker.subscriber(queue, task="proj.tasks.add")
     async def handler() -> int:
         return 3
 
-    async with _replies(broker) as replies:
+    async with TestCeleryBroker(broker, observer):
         await broker.publish(
             CeleryTask("proj.tasks.add"),
             queue=queue,

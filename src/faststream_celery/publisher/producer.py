@@ -92,16 +92,6 @@ class CeleryFastProducer(ProducerProto[CeleryPublishCommand]):
         self._lock: anyio.Lock | None = None
         self._result_backend: ResultBackend | None = None
 
-    @property
-    def parser(self) -> ParserComposition:
-        """The parser a reply travels through."""
-        return self._parser
-
-    @property
-    def decoder(self) -> ParserComposition:
-        """The decoder a reply travels through."""
-        return self._decoder
-
     def connect(
         self,
         connection: Connection,

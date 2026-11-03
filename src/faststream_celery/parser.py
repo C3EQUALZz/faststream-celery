@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING, Final, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from faststream.message import decode_message
 
@@ -16,13 +16,6 @@ if TYPE_CHECKING:
 
 # `(args, kwargs, embed)`.
 _V2_BODY_SLOTS: Final[int] = 3
-
-_NO_CANVAS: Final[TaskEmbed] = TaskEmbed(
-    callbacks=None,
-    errbacks=None,
-    chain=None,
-    chord=None,
-)
 
 
 class Schedule(NamedTuple):
@@ -94,16 +87,13 @@ def read_embed(raw: "Message") -> TaskEmbed:
     Empty for every other kind of message, so a caller can ask without
     knowing which protocol the sender used.
     """
-    if not (raw.headers or {}).get("task"):
-        return _NO_CANVAS
-
-    decoded = _try_decode(raw)
-    if not isinstance(decoded, (list, tuple)) or len(decoded) < _V2_BODY_SLOTS:
-        return _NO_CANVAS
-
-    embed = decoded[2]
-    if not isinstance(embed, Mapping):
-        return _NO_CANVAS
+    embed: Mapping[str, Any] = {}
+    if (raw.headers or {}).get("task"):
+        decoded = _try_decode(raw)
+        if isinstance(decoded, (list, tuple)) and len(decoded) >= _V2_BODY_SLOTS:
+            candidate = decoded[2]
+            if isinstance(candidate, Mapping):
+                embed = candidate
 
     return TaskEmbed(
         callbacks=embed.get("callbacks"),

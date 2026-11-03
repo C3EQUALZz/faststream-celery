@@ -163,18 +163,28 @@ class TestReadingTheEmbed:
 
         assert read_embed(incoming.message)["callbacks"] == [signature("proj.tasks.b")]
 
-    def test_a_plain_message_has_no_canvas(self) -> None:
-        assert read_embed(consumer_message({"a": 1}).message) == embed()
+    @pytest.mark.parametrize(
+        ("body", "headers"),
+        (
+            ({"a": 1}, {}),
+            ([[1], {}], {"task": "proj.tasks.a"}),
+            ([[1], {}, "nope"], {"task": "proj.tasks.a"}),
+        ),
+    )
+    def test_empty_canvas_is_independent_for_each_message(
+        self,
+        body: Any,
+        headers: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        first = read_embed(consumer_message(body, headers=headers).message)
+        assert first == embed()
+        monkeypatch.setitem(first, "callbacks", [signature("unexpected")])
 
-    def test_a_short_body_has_no_canvas(self) -> None:
-        incoming = consumer_message([[1], {}], headers={"task": "proj.tasks.a"})
-
-        assert read_embed(incoming.message) == embed()
-
-    def test_a_non_mapping_embed_has_no_canvas(self) -> None:
-        incoming = consumer_message([[1], {}, "nope"], headers={"task": "proj.tasks.a"})
-
-        assert read_embed(incoming.message) == embed()
+        following = read_embed(
+            consumer_message([[1], {}], headers={"task": "next"}).message,
+        )
+        assert following == embed()
 
 
 class TestDispatcher:
