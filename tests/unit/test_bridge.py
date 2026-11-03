@@ -246,35 +246,51 @@ class TestSettleLatency:
 
 
 class TestPrefetch:
-    def test_raise_prefetch_widens_the_window(self, bridge: ConsumerBridge) -> None:
-        bridge.raise_prefetch(10)
+    @pytest.mark.parametrize("count", (0, 10))
+    def test_raise_prefetch_widens_the_window(
+        self,
+        bridge: ConsumerBridge,
+        count: int,
+    ) -> None:
+        bridge.raise_prefetch(count)
 
-        assert bridge._prefetch_count == 10
+        assert bridge._prefetch_count == count
 
-    def test_raise_prefetch_never_narrows(self, bridge: ConsumerBridge) -> None:
-        bridge.raise_prefetch(10)
+    @pytest.mark.parametrize("count", (0, 10))
+    def test_raise_prefetch_never_narrows(
+        self,
+        bridge: ConsumerBridge,
+        count: int,
+    ) -> None:
+        bridge.raise_prefetch(count)
         bridge.raise_prefetch(2)
 
-        assert bridge._prefetch_count == 10
+        assert bridge._prefetch_count == count
 
     @pytest.mark.asyncio()
+    @pytest.mark.parametrize("count", (0, 5))
     async def test_a_widened_window_is_applied_while_running(
         self,
         bridge: ConsumerBridge,
         queue: str,
+        count: int,
     ) -> None:
-        """Messages keep flowing after the consumer re-negotiates QoS."""
+        """Receive several unsettled deliveries after re-negotiating QoS."""
         await bridge.start()
-        bridge.raise_prefetch(5)
-
-        publish(queue, [[], {}, {}], headers={"task": "t", "id": "1"})
-        msg = await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
-
-        assert msg.message.headers["id"] == "1"
-        # The consumer thread applies the change on its next pass.
-        await _until(lambda: not bridge._prefetch_changed.is_set())
-
-        await bridge.stop()
+        try:
+            bridge.raise_prefetch(count)
+            for index in range(3):
+                publish(queue, index)
+            received = [
+                await asyncio.wait_for(bridge.get(), timeout=GET_TIMEOUT)
+                for _ in range(3)
+            ]
+            assert [msg.message.decode() for msg in received] == [0, 1, 2]
+            assert not bridge._prefetch_changed.is_set()
+            for message in received:
+                await message.settle(AckStatus.ACKED)
+        finally:
+            await bridge.stop()
 
 
 class TestPayloads:

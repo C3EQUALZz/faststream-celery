@@ -58,7 +58,7 @@ class CeleryRegistrator(Registrator[ConsumerMessage, CeleryBrokerConfig]):
                 Without it, handles messages not claimed by an exact task
                 subscriber on this queue.
             prefetch_count: kombu QoS prefetch count (broker connection-level
-                `prefetch_count` or `max_workers` by default).
+                `prefetch_count` or `max_workers` by default). Zero is unlimited.
             ack_policy: Acknowledgement policy for message processing.
             dependencies: Dependencies list (`[Depends(),]`) to apply to the subscriber.
             parser: Parser to map the original kombu Message to a FastStream one.

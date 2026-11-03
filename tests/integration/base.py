@@ -398,6 +398,43 @@ class TransportTestcase:
     """Wire compatibility with a live Celery, on one kombu transport."""
 
     @pytest.mark.asyncio()
+    @pytest.mark.parametrize("scope", ("broker", "subscriber"))
+    async def test_zero_prefetch_delivers_tasks_before_any_ack(
+        self,
+        broker_url: str,
+        celery_app: Celery,
+        queue: str,
+        scope: str,
+    ) -> None:
+        broker = CeleryBroker(
+            broker_url,
+            max_workers=1,
+            prefetch_count=0 if scope == "broker" else 2,
+        )
+        subscriber = broker.subscriber(
+            queue,
+            prefetch_count=0 if scope == "subscriber" else None,
+        )
+        async with running(broker):
+            for index in range(3):
+                celery_app.send_task(
+                    "tests.prefetch",
+                    args=[index],
+                    queue=queue,
+                    ignore_result=True,
+                )
+            messages = []
+            for _ in range(3):
+                message = await subscriber.get_one(timeout=CONSUME_TIMEOUT)
+                assert message is not None
+                assert not message.kombu_message.acknowledged
+                messages.append(message)
+
+            for index, message in enumerate(messages):
+                assert await message.decode() == {"args": [index], "kwargs": {}}
+                await message.ack()
+
+    @pytest.mark.asyncio()
     async def test_consumer_recovers_after_connection_loss(
         self,
         broker: CeleryBroker,

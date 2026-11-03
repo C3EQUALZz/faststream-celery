@@ -173,12 +173,21 @@ class TestRegistry:
         assert first is second
         assert other is not first
 
-    def test_widest_prefetch_window_wins(self, registry: ConsumerRegistry) -> None:
-        consumer = registry.acquire(**acquire_args("celery", prefetch=2))
-        registry.acquire(**acquire_args("celery", prefetch=10))
-        registry.acquire(**acquire_args("celery", prefetch=5))
+    @pytest.mark.parametrize(
+        ("counts", "expected"),
+        (((2, 10, 5), 10), ((2, 0, 5), 0), ((0, 10, 5), 0), ((2, 5, 0), 0)),
+    )
+    def test_widest_prefetch_window_wins(
+        self,
+        registry: ConsumerRegistry,
+        counts: tuple[int, ...],
+        expected: int,
+    ) -> None:
+        consumer = registry.acquire(**acquire_args("celery", prefetch=counts[0]))
+        for count in counts[1:]:
+            assert registry.acquire(**acquire_args("celery", prefetch=count)) is consumer
 
-        assert consumer.bridge._prefetch_count == 10
+        assert consumer.bridge._prefetch_count == expected
 
     @pytest.mark.asyncio()
     async def test_consumer_closes_when_the_last_subscriber_leaves(

@@ -171,7 +171,7 @@ class ConsumerRegistry:
 
         Subscribers sharing a queue may ask for different prefetch counts;
         the widest window wins, since a narrower one would throttle the
-        others.
+        others. Zero means unlimited and wins over every finite window.
         """
         if (consumer := self._consumers.get(queue)) is not None:
             consumer.bridge.raise_prefetch(prefetch_count)

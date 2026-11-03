@@ -107,6 +107,7 @@ class CeleryBroker(
             security: FastStream security object (SSL context, SASL credentials).
             max_workers: Default number of workers processing messages concurrently.
             prefetch_count: kombu QoS prefetch count (`max_workers` by default).
+                Zero means unlimited prefetch.
             middlewares: Broker middlewares to apply to all subscribers/publishers.
             logger: Custom logger object.
             log_level: Log level for the broker logger.

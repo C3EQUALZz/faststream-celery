@@ -75,15 +75,25 @@ class TestDefaults:
 
         assert subscriber.config.prefetch_count == 3
 
-    def test_a_subscriber_overrides_the_broker_prefetch(self) -> None:
-        broker = CeleryBroker(max_workers=3, prefetch_count=10)
+    @pytest.mark.parametrize(
+        ("broker_prefetch", "subscriber_prefetch"),
+        ((10, 5), (10, 0), (0, 5), (0, 0), (None, 0)),
+    )
+    def test_a_subscriber_overrides_the_broker_prefetch(
+        self,
+        broker_prefetch: int | None,
+        subscriber_prefetch: int,
+    ) -> None:
+        broker = CeleryBroker(max_workers=3, prefetch_count=broker_prefetch)
+        subscriber = broker.subscriber("celery", prefetch_count=subscriber_prefetch)
 
-        assert broker.subscriber("celery", prefetch_count=5).config.prefetch_count == 5
+        assert subscriber.config.prefetch_count == subscriber_prefetch
 
-    def test_the_broker_prefetch_beats_max_workers(self) -> None:
-        broker = CeleryBroker(max_workers=3, prefetch_count=10)
+    @pytest.mark.parametrize("prefetch", (0, 10))
+    def test_the_broker_prefetch_beats_max_workers(self, prefetch: int) -> None:
+        broker = CeleryBroker(max_workers=3, prefetch_count=prefetch)
 
-        assert broker.subscriber("celery").config.prefetch_count == 10
+        assert broker.subscriber("celery").config.prefetch_count == prefetch
 
 
 class TestAckPolicy:

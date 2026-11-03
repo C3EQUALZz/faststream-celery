@@ -86,7 +86,7 @@ class CeleryRoute(SubscriberRoute):
             queue: Celery queue name to consume tasks from.
             publishers: Celery publishers to broadcast the handler result.
             task: Celery task name (`headers["task"]`) to filter messages by.
-            prefetch_count: kombu QoS prefetch count.
+            prefetch_count: kombu QoS prefetch count. Zero means unlimited prefetch.
             dependencies: Dependencies list (`[Dependant(),]`) to apply to the subscriber.
             parser: Parser to map the original kombu Message to a FastStream one.
             decoder: Function to decode the FastStream msg body to python objects.

@@ -30,7 +30,9 @@ def create_subscriber(  # ruff: ignore[too-many-arguments]
     include_in_schema: bool,
 ) -> SubscriberType:
     workers = max_workers or config.max_workers
-    prefetch = prefetch_count or config.prefetch_count or workers
+    prefetch = config.prefetch_count if prefetch_count is None else prefetch_count
+    if prefetch is None:
+        prefetch = workers
 
     subscriber_config = CelerySubscriberConfig(
         queue=queue,

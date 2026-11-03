@@ -123,8 +123,8 @@ class ConsumerBridge:
             self._messages.put_nowait(IncorrectState("Consumer is stopped."))
 
     def raise_prefetch(self, count: int) -> None:
-        """Widen the QoS window; the consumer thread applies it."""
-        if count > self._prefetch_count:
+        """Widen QoS; zero removes the limit and cannot be narrowed later."""
+        if self._prefetch_count != 0 and (count == 0 or count > self._prefetch_count):
             self._prefetch_count = count
             self._prefetch_changed.set()
 

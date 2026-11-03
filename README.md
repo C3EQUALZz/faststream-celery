@@ -152,6 +152,11 @@ on every commit. On Redis, `visibility_timeout` has to match across every client
 and worker sharing the bus — otherwise one side redelivers what another is still
 working on.
 
+`prefetch_count=0` enables unlimited prefetch at broker or subscriber level.
+`None` inherits the broker setting, then defaults to `max_workers`. Subscribers
+sharing a queue use the widest requested window; zero takes precedence over
+finite values. Processing concurrency is set separately by `max_workers`.
+
 After a consumer has started, recoverable read-connection failures are retried
 automatically with capped exponential backoff. `broker.ping()` returns `False`
 while any queue consumer is recovering or has stopped. Errors establishing the

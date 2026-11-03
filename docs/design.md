@@ -189,8 +189,11 @@ docs.
 ### 14. Concurrency and QoS
 
 - `max_workers` — the stock FastStream `ConcurrentMixin`.
-- A separate `prefetch_count` parameter (default = `max_workers`) → kombu QoS;
-  for Redis it controls the size of the `unacked` buffer.
+- A separate `prefetch_count` parameter → kombu QoS; `None` inherits the broker
+  setting, then defaults to `max_workers`. An explicit `0` means unlimited
+  prefetch. Shared queue consumers keep the widest requested window, with zero
+  taking precedence over every finite value. Redis uses the same limit for
+  its `unacked` buffer.
 
 ### 15. Time limits
 
