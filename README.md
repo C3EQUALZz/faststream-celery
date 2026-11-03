@@ -123,6 +123,12 @@ and the value passed to callbacks and chain steps. Its headers and correlation
 ID remain available to ordinary FastStream publishers; Celery results keep the
 incoming task ID.
 
+Canvas continuations preserve scheduling, explicit routing, headers, retries,
+group metadata and nested callbacks/errbacks. A continuation without an explicit
+queue uses its subscriber's queue. Unsupported non-null options and composite
+signatures raise `SetupError` during dispatch; priority and mixed chord
+coordination remain pending. See [the canvas contract](docs/design.md#8-canvas).
+
 RPC replies are acknowledged before their connection closes. Returned results
 have no delivery to settle: their `ack()`, `nack()` and `reject()` methods only
 update local message state and cannot requeue the completed task.

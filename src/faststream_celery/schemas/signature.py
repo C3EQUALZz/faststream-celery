@@ -63,7 +63,9 @@ def queue_of(sig: TaskSignature, default: str) -> str:
 
 
 def as_signatures(
-    values: Sequence[TaskSignature] | None,
+    values: TaskSignature | Sequence[TaskSignature] | None,
 ) -> list[TaskSignature]:
-    """Normalize the ``embed`` slots, which are ``None`` when unused."""
+    """Normalize a single link or a sequence of links to a list."""
+    if isinstance(values, dict):
+        return [values]
     return list(values or [])

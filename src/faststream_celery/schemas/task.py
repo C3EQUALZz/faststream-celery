@@ -90,7 +90,29 @@ Continuation: TypeAlias = CeleryTask | TaskSignature
 def as_signature(step: "Continuation") -> TaskSignature:
     """Serialize a canvas step, whichever way it was written."""
     if isinstance(step, CeleryTask):
-        return signature(step.task, args=step.args, kwargs=step.kwargs)
+        options = {
+            "countdown": step.countdown,
+            "eta": step.eta.isoformat() if step.eta is not None else None,
+            "expires": (
+                step.expires.isoformat()
+                if isinstance(step.expires, datetime)
+                else step.expires
+            ),
+            "retries": step.retries,
+            "link": _steps(step.link),
+            "link_error": _steps(step.link_error),
+            "chain": _steps(step.chain),
+            "root_id": step.root_id,
+            "parent_id": step.parent_id,
+            "group_id": step.group,
+            "group_index": step.group_index,
+        }
+        return signature(
+            step.task,
+            args=step.args,
+            kwargs=step.kwargs,
+            options={key: value for key, value in options.items() if value is not None},
+        )
 
     return step
 

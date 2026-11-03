@@ -9,6 +9,7 @@ Celery ships no type information, so ``@app.task`` is an untyped decorator.
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,27 @@ def delivery_info(task: Any, payload: Any) -> dict[str, Any]:
     }
     record(delivery)
     return delivery
+
+
+@app.task(bind=True, name="tests.continuation_info")
+def continuation_info(task: Any, payload: Any) -> dict[str, Any]:
+    """Expose the continuation metadata received by a real Celery worker."""
+    info = {
+        "payload": payload,
+        "eta": task.request.eta,
+        "expires": task.request.expires,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "retries": task.request.retries,
+        "group": task.request.group,
+        "group_index": task.request.group_index,
+        "root_id": task.request.root_id,
+        "parent_id": task.request.parent_id,
+        "headers": task.request.headers,
+        "exchange": task.request.delivery_info["exchange"],
+        "routing_key": task.request.delivery_info["routing_key"],
+    }
+    record(info)
+    return info
 
 
 @app.task(name="tests.fail")

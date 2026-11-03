@@ -9,6 +9,7 @@ belongs in that transport's module instead.
 import asyncio
 import time
 from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -967,3 +968,55 @@ class TransportTestcase:
         assert wait_for_log(celery_worker) == [
             {"task": "tests.echo", "payload": "own"},
         ]
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("scheduling", ("countdown", "eta"))
+    async def test_continuation_options_reach_a_celery_worker(  # ruff: ignore[too-many-arguments]
+        self,
+        broker: CeleryBroker,
+        celery_app: Celery,
+        queue: str,
+        our_queue: str,
+        celery_worker: Path,
+        *,
+        scheduling: str,
+    ) -> None:
+        @broker.subscriber(our_queue, task="tests.middle")
+        async def middle() -> int:
+            return 7
+
+        due = datetime.now(timezone.utc) + timedelta(seconds=COUNTDOWN)
+        expires = due + timedelta(minutes=1)
+        exchange, routing_key = f"{queue}.canvas", f"{queue}.route"
+        step = celery_app.signature(
+            "tests.continuation_info",
+            queue=queue,
+            exchange=exchange,
+            routing_key=routing_key,
+            expires=expires,
+            retries=2,
+            group_id="canvas-group",
+            group_index=0,
+            headers={"custom": "preserved"},
+            **{scheduling: COUNTDOWN if scheduling == "countdown" else due},
+        )
+
+        async with running(broker):
+            parent = celery_app.send_task("tests.middle", queue=our_queue, chain=[step])
+            entries = await asyncio.to_thread(wait_for_log, celery_worker)
+
+        assert len(entries) == 1
+        info = entries[0]
+        eta = datetime.fromisoformat(info["eta"])
+        assert eta >= due
+        assert datetime.fromisoformat(info["started_at"]) >= eta
+        assert info["expires"] == expires.isoformat()
+        assert info["payload"] == 7
+        assert info["retries"] == 2
+        assert info["group"] == "canvas-group"
+        assert info["group_index"] == 0
+        assert info["root_id"] == parent.id
+        assert info["parent_id"] == parent.id
+        assert info["headers"] == {"custom": "preserved"}
+        assert info["exchange"] == exchange
+        assert info["routing_key"] == routing_key

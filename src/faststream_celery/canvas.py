@@ -5,12 +5,15 @@ Once a handler finishes, whatever is waiting there is published as ordinary
 tasks, the same way ``celery.app.trace`` dispatches them.
 """
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 
+from faststream.exceptions import SetupError
 from faststream.response import PublishType
 
 from faststream_celery.response import CeleryPublishCommand
-from faststream_celery.schemas.signature import call_args, queue_of
+from faststream_celery.schemas.constants import SERIALIZER
+from faststream_celery.schemas.signature import as_signatures, call_args, queue_of
 from faststream_celery.schemas.task import CeleryTask
 from faststream_celery.types import TaskEmbed, TaskSignature
 
@@ -19,6 +22,29 @@ if TYPE_CHECKING:
 
     from faststream_celery._internal import ProducerProto, SendableMessage
     from faststream_celery.message import ConsumerMessage
+
+
+CONTINUATION_OPTIONS = (
+    "task_id",
+    "reply_to",
+    "queue",
+    "exchange",
+    "routing_key",
+    "declare",
+    "headers",
+    "serializer",
+    "countdown",
+    "eta",
+    "expires",
+    "retries",
+    "link",
+    "link_error",
+    "chain",
+    "root_id",
+    "parent_id",
+    "group_id",
+    "group_index",
+)
 
 
 class CanvasDispatcher:
@@ -32,6 +58,8 @@ class CanvasDispatcher:
         msg: "StreamMessage[ConsumerMessage]",
         embed: TaskEmbed,
         result: "SendableMessage",
+        *,
+        queue: str,
     ) -> None:
         """Fire the callbacks, then step the chain along.
 
@@ -39,7 +67,12 @@ class CanvasDispatcher:
         first argument, unless their signature is immutable.
         """
         for callback in embed.get("callbacks") or ():
-            await self._publish(msg, callback, args=call_args(callback, result))
+            await self._publish(
+                msg,
+                callback,
+                args=call_args(callback, result),
+                queue=queue,
+            )
 
         chain = list(embed.get("chain") or ())
         if not chain:
@@ -54,6 +87,7 @@ class CanvasDispatcher:
             following,
             args=call_args(following, result),
             chain=remaining,
+            queue=queue,
         )
 
     async def on_failure(
@@ -61,6 +95,8 @@ class CanvasDispatcher:
         msg: "StreamMessage[ConsumerMessage]",
         embed: TaskEmbed,
         task_id: str,
+        *,
+        queue: str,
     ) -> None:
         """Fire the errbacks.
 
@@ -68,7 +104,7 @@ class CanvasDispatcher:
         not the exception — ``Backend._call_task_errbacks``.
         """
         for errback in embed.get("errbacks") or ():
-            await self._publish(msg, errback, args=[task_id])
+            await self._publish(msg, errback, args=[task_id], queue=queue)
 
     async def _publish(
         self,
@@ -76,11 +112,26 @@ class CanvasDispatcher:
         step: TaskSignature,
         *,
         args: "list[SendableMessage]",
+        queue: str,
         chain: list[TaskSignature] | None = None,
     ) -> None:
-        """Publish one continuation, with the queue, id and reply queue it asks for."""
+        """Publish a supported task signature without discarding its options."""
         task_id = msg.headers.get("id") or msg.correlation_id
         options = step.get("options") or {}
+        unsupported = {
+            key
+            for key, value in options.items()
+            if value is not None and key not in CONTINUATION_OPTIONS
+        }
+        if options.get("serializer") not in {None, SERIALIZER}:
+            unsupported.add("serializer")
+        if unsupported or step.get("subtask_type"):
+            reason = step.get("subtask_type") or ", ".join(sorted(unsupported))
+            error = f"Unsupported Celery continuation options or type: {reason}."
+            raise SetupError(error)
+
+        eta = options.get("eta")
+        expires = options.get("expires")
 
         await self._producer.publish(
             CeleryPublishCommand(
@@ -88,24 +139,33 @@ class CanvasDispatcher:
                     step["task"],
                     args=args,
                     kwargs=step.get("kwargs") or {},
-                    chain=chain or (),
+                    countdown=options.get("countdown"),
+                    eta=(
+                        datetime.fromisoformat(eta.replace("Z", "+00:00"))
+                        if isinstance(eta, str)
+                        else eta
+                    ),
+                    expires=(
+                        datetime.fromisoformat(expires.replace("Z", "+00:00"))
+                        if isinstance(expires, str)
+                        else expires
+                    ),
+                    retries=options.get("retries", 0),
+                    link=as_signatures(options.get("link")),
+                    link_error=as_signatures(options.get("link_error")),
+                    chain=chain if chain is not None else options.get("chain") or (),
                     root_id=msg.headers.get("root_id") or task_id,
                     parent_id=task_id,
+                    group=options.get("group_id"),
+                    group_index=options.get("group_index"),
                 ),
-                queue=queue_of(step, _incoming_queue(msg)),
+                queue=queue_of(step, queue),
+                exchange=options.get("exchange"),
+                routing_key=options.get("routing_key"),
+                declare=options.get("declare", True),
+                headers=options.get("headers"),
                 correlation_id=options.get("task_id"),
                 reply_to=str(options.get("reply_to") or ""),
                 _publish_type=PublishType.PUBLISH,
             ),
         )
-
-
-def _incoming_queue(msg: "StreamMessage[ConsumerMessage]") -> str:
-    """Where a continuation goes when its signature does not say.
-
-    Celery names a queue, its exchange and its routing key alike, so the
-    routing key of the task we just ran is the queue it arrived on.
-    """
-    routing_key = msg.raw_message.message.delivery_info.get("routing_key")
-
-    return str(routing_key or "")

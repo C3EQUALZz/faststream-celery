@@ -66,6 +66,8 @@ class CeleryResultMiddleware(
         task_id: str = msg.headers.get("id") or msg.correlation_id
 
         embed = read_embed(msg.raw_message.message)
+        subscriber = get_subscriber(self.context)
+        queue = subscriber.queue if subscriber is not None else ""
 
         try:
             result = await call_next(msg)
@@ -78,13 +80,13 @@ class CeleryResultMiddleware(
         except Exception as exc:
             if self.should_report_outcome(msg, failed=True):
                 await self._report(msg, build_failure(task_id, exc), reply=True)
-                await self._canvas.on_failure(msg, embed, task_id)
+                await self._canvas.on_failure(msg, embed, task_id, queue=queue)
             raise
 
         if self.should_report_outcome(msg, failed=False):
             body = ensure_response(result).body
             await self._report(msg, build_success(task_id, body), reply=False)
-            await self._canvas.on_success(msg, embed, body)
+            await self._canvas.on_success(msg, embed, body, queue=queue)
         return result
 
     def should_report_outcome(self, msg: "StreamMessage[Any]", *, failed: bool) -> bool:

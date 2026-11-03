@@ -1,9 +1,12 @@
 """Chains, callbacks and errbacks (ticket-5)."""
 
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from faststream.exceptions import SetupError
 
 from faststream_celery import CeleryBroker, CeleryTask, TestCeleryBroker, signature
 from faststream_celery.canvas import CanvasDispatcher
@@ -68,6 +71,21 @@ class TestSignature:
         sig = signature("proj.tasks.b")
 
         assert as_signature(sig) is sig
+
+    def test_a_task_keeps_lineage_and_a_nested_chain_in_its_signature(self) -> None:
+        sig = as_signature(
+            CeleryTask(
+                "next",
+                root_id="root",
+                parent_id="parent",
+                chain=[CeleryTask("last", countdown=3)],
+            ),
+        )
+
+        assert sig["options"]["root_id"] == "root"
+        assert sig["options"]["parent_id"] == "parent"
+        assert sig["options"]["chain"][0]["task"] == "last"
+        assert sig["options"]["chain"][0]["options"]["countdown"] == 3
 
 
 class TestPublishingACanvas:
@@ -182,6 +200,155 @@ class TestDispatcher:
         )
 
     @pytest.mark.asyncio()
+    @pytest.mark.parametrize("scheduling", ("countdown", "eta"))
+    async def test_a_task_continuation_keeps_its_options(
+        self,
+        dispatcher: CanvasDispatcher,
+        producer: AsyncMock,
+        message: CeleryMessage,
+        scheduling: str,
+    ) -> None:
+        due = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        callback = CeleryTask("notify", countdown=5)
+        following = CeleryTask(
+            "next",
+            countdown=0 if scheduling == "countdown" else None,
+            eta=due if scheduling == "eta" else None,
+            expires=due + timedelta(days=1),
+            retries=2,
+            link=[callback],
+            link_error=[CeleryTask("on_error")],
+            group="group-id",
+            group_index=0,
+        )
+        step = as_signature(following)
+        original = deepcopy(step)
+
+        await dispatcher.on_success(
+            message,
+            embed(chain=[step]),
+            result=7,
+            queue=INCOMING_QUEUE,
+        )
+
+        command = producer.publish.call_args.args[0]
+        envelope = build_task_envelope(command.body, task_id="next-id", now=due)
+        assert envelope.headers["eta"] == due.isoformat()
+        assert envelope.headers["expires"] == (due + timedelta(days=1)).isoformat()
+        assert envelope.headers["retries"] == 2
+        assert envelope.headers["group"] == "group-id"
+        assert envelope.headers["group_index"] == 0
+        assert envelope.body[0] == [7]
+        assert envelope.body[2]["callbacks"] == [as_signature(callback)]
+        assert envelope.body[2]["errbacks"] == [as_signature(CeleryTask("on_error"))]
+        assert step == original
+
+    @pytest.mark.asyncio()
+    async def test_signature_routing_and_headers_reach_the_command(
+        self,
+        dispatcher: CanvasDispatcher,
+        producer: AsyncMock,
+        message: CeleryMessage,
+    ) -> None:
+        step = signature(
+            "next",
+            options={
+                "queue": "custom-queue",
+                "exchange": "",
+                "routing_key": "route",
+                "declare": False,
+                "headers": {"custom": "value"},
+            },
+        )
+
+        await dispatcher.on_success(message, embed(chain=[step]), result=1, queue="other")
+
+        command = producer.publish.call_args.args[0]
+        assert command.queue == "custom-queue"
+        assert command.exchange == ""
+        assert command.routing_key == "route"
+        assert command.declare is False
+        assert command.headers == {"custom": "value"}
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("slot", ("callbacks", "errbacks"))
+    async def test_links_preserve_their_own_canvas(
+        self,
+        dispatcher: CanvasDispatcher,
+        producer: AsyncMock,
+        message: CeleryMessage,
+        slot: str,
+    ) -> None:
+        next_step = signature("nested")
+        step = signature(
+            "next",
+            options={
+                "chain": [next_step],
+                "link": next_step,
+                "link_error": [next_step],
+                "eta": "2030-01-01T00:00:00Z",
+                "expires": 0,
+            },
+        )
+        original = deepcopy(step)
+        if slot == "callbacks":
+            await dispatcher.on_success(
+                message,
+                embed(callbacks=[step]),
+                result=1,
+                queue="q",
+            )
+        else:
+            await dispatcher.on_failure(
+                message,
+                embed(errbacks=[step]),
+                "failed",
+                queue="q",
+            )
+
+        task = producer.publish.call_args.args[0].body
+        assert list(task.chain) == [next_step]
+        assert list(task.link) == [next_step]
+        assert list(task.link_error) == [next_step]
+        assert task.eta == datetime(2030, 1, 1, tzinfo=timezone.utc)
+        assert task.expires == 0
+        assert step == original
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize(
+        "unsupported",
+        ({"priority": 4}, {"chord": {"task": "done"}}, {"serializer": "pickle"}),
+    )
+    async def test_unsupported_options_are_explicit(
+        self,
+        dispatcher: CanvasDispatcher,
+        producer: AsyncMock,
+        message: CeleryMessage,
+        unsupported: dict[str, Any],
+    ) -> None:
+        with pytest.raises(SetupError, match=next(iter(unsupported))):
+            await dispatcher.on_success(
+                message,
+                embed(chain=[signature("next", options=unsupported)]),
+                result=1,
+                queue=INCOMING_QUEUE,
+            )
+        producer.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio()
+    async def test_composite_signatures_are_explicit(
+        self,
+        dispatcher: CanvasDispatcher,
+        producer: AsyncMock,
+        message: CeleryMessage,
+    ) -> None:
+        step = signature("celery.group")
+        step["subtask_type"] = "group"
+        with pytest.raises(SetupError, match="group"):
+            await dispatcher.on_success(message, embed(chain=[step]), result=1, queue="q")
+        producer.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio()
     async def test_a_callback_receives_the_result(
         self,
         dispatcher: CanvasDispatcher,
@@ -192,6 +359,7 @@ class TestDispatcher:
             message,
             embed(callbacks=[signature("proj.tasks.b")]),
             result=42,
+            queue=INCOMING_QUEUE,
         )
 
         (cmd,), _ = producer.publish.call_args
@@ -210,6 +378,7 @@ class TestDispatcher:
             message,
             embed(callbacks=[signature("proj.tasks.b"), signature("proj.tasks.c")]),
             result=1,
+            queue=INCOMING_QUEUE,
         )
 
         published = [call.args[0].body.task for call in producer.publish.call_args_list]
@@ -225,7 +394,12 @@ class TestDispatcher:
         """Celery keeps a chain reversed: the next step is the last element."""
         chain = [signature("proj.tasks.d"), signature("proj.tasks.c")]
 
-        await dispatcher.on_success(message, embed(chain=chain), result=1)
+        await dispatcher.on_success(
+            message,
+            embed(chain=chain),
+            result=1,
+            queue=INCOMING_QUEUE,
+        )
 
         (cmd,), _ = producer.publish.call_args
         assert cmd.body.task == "proj.tasks.c"
@@ -246,10 +420,20 @@ class TestDispatcher:
         """
         step = signature(
             "proj.tasks.c",
-            options={"reply_to": "client-oid", "task_id": "frozen-id"},
+            options={
+                "reply_to": "client-oid",
+                "task_id": "frozen-id",
+                "serializer": "json",
+                "chord": None,
+            },
         )
 
-        await dispatcher.on_success(message, embed(chain=[step]), result=1)
+        await dispatcher.on_success(
+            message,
+            embed(chain=[step]),
+            result=1,
+            queue=INCOMING_QUEUE,
+        )
 
         (cmd,), _ = producer.publish.call_args
         assert cmd.reply_to == "client-oid"
@@ -266,6 +450,7 @@ class TestDispatcher:
             message,
             embed(chain=[signature("proj.tasks.c")]),
             result=1,
+            queue=INCOMING_QUEUE,
         )
 
         (cmd,), _ = producer.publish.call_args
@@ -282,6 +467,7 @@ class TestDispatcher:
             message,
             embed(chain=[signature("proj.tasks.c")]),
             result=1,
+            queue=INCOMING_QUEUE,
         )
 
         (cmd,), _ = producer.publish.call_args
@@ -298,6 +484,7 @@ class TestDispatcher:
             message,
             embed(chain=[signature("proj.tasks.c", args=[9], immutable=True)]),
             result=1,
+            queue=INCOMING_QUEUE,
         )
 
         (cmd,), _ = producer.publish.call_args
@@ -314,6 +501,7 @@ class TestDispatcher:
             message,
             embed(callbacks=[signature("proj.tasks.b")]),
             result=1,
+            queue=INCOMING_QUEUE,
         )
 
         (cmd,), _ = producer.publish.call_args
@@ -331,6 +519,7 @@ class TestDispatcher:
             message,
             embed(callbacks=[signature("proj.tasks.b", options={"queue": "other"})]),
             result=1,
+            queue=INCOMING_QUEUE,
         )
 
         (cmd,), _ = producer.publish.call_args
@@ -343,7 +532,12 @@ class TestDispatcher:
         producer: AsyncMock,
         message: CeleryMessage,
     ) -> None:
-        await dispatcher.on_success(message, embed(), result=1)
+        await dispatcher.on_success(
+            message,
+            embed(),
+            result=1,
+            queue=INCOMING_QUEUE,
+        )
 
         producer.publish.assert_not_called()
 
@@ -359,6 +553,7 @@ class TestDispatcher:
             message,
             embed(errbacks=[signature("proj.tasks.on_error")]),
             task_id="task-id-1",
+            queue=INCOMING_QUEUE,
         )
 
         (cmd,), _ = producer.publish.call_args
@@ -376,6 +571,7 @@ class TestDispatcher:
             message,
             embed(callbacks=[signature("proj.tasks.b")]),
             task_id="task-id-1",
+            queue=INCOMING_QUEUE,
         )
 
         producer.publish.assert_not_called()
@@ -403,6 +599,7 @@ class TestCanvasThroughTheBroker:
                     chain=[signature("proj.tasks.b")],
                 ),
                 queue=queue,
+                routing_key="route-is-not-a-queue",
             )
 
         assert seen == [[5]]
@@ -466,13 +663,26 @@ class TestCanvasThroughTheBroker:
             return 1
 
         @broker.subscriber(queue, task="proj.tasks.b")
-        async def second(args: list[int], kwargs: dict[str, Any]) -> None:
+        async def second(args: list[int], kwargs: dict[str, Any]) -> int:
+            seen.append(args)
+            return 2
+
+        @broker.subscriber(queue, task="proj.tasks.notify")
+        async def notify(args: list[int], kwargs: dict[str, Any]) -> None:
             seen.append(args)
 
         async with TestCeleryBroker(broker):
             await broker.publish(
-                CeleryTask("proj.tasks.a", chain=[CeleryTask("proj.tasks.b")]),
+                CeleryTask(
+                    "proj.tasks.a",
+                    chain=[
+                        CeleryTask(
+                            "proj.tasks.b",
+                            link=[CeleryTask("proj.tasks.notify")],
+                        ),
+                    ],
+                ),
                 queue=queue,
             )
 
-        assert seen == [[1]]
+        assert seen == [[1], [2]]

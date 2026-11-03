@@ -62,13 +62,9 @@ class InMemoryResultBackend:
                 result = await self.load(task_id)
                 if result is not None and result["status"] in READY_STATES:
                     return result
-                await self._event_for(task_id).wait()
+                if (event := self._arrived.get(task_id)) is None:
+                    event = self._arrived[task_id] = anyio.Event()
+                await event.wait()
 
         msg = f"No Celery result for task {task_id!r} within {timeout} seconds."
         raise TimeoutError(msg)
-
-    def _event_for(self, task_id: str) -> anyio.Event:
-        if (event := self._arrived.get(task_id)) is None:
-            event = self._arrived[task_id] = anyio.Event()
-
-        return event
